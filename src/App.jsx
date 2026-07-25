@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import CinemaMultiSelect from "./CinemaMultiSelect.jsx";
 import { fetchAllUpcomingScreenings } from "./screeningsApi.js";
 import { SUPABASE_CONFIGURED } from "./supabaseClient.js";
 import { londonDateKey } from "./time.js";
@@ -24,7 +25,10 @@ export default function App() {
   const [status, setStatus] = useState("loading");
   const [errorMsg, setErrorMsg] = useState("");
   const [search, setSearch] = useState("");
-  const [cinema, setCinema] = useState("all");
+  const [cinemaSelection, setCinemaSelection] = useState({
+    mode: "all",
+    names: [],
+  });
   const [minRating, setMinRating] = useState(0);
   const trakt = useTrakt();
 
@@ -62,11 +66,75 @@ export default function App() {
     const names = new Set();
 
     for (const screening of screenings) {
-      names.add(screening.cinema_name);
+      if (screening.cinema_name) {
+        names.add(screening.cinema_name);
+      }
     }
 
     return Array.from(names).sort((a, b) => a.localeCompare(b));
   }, [screenings]);
+
+  const selectedCinemas = useMemo(() => {
+    if (cinemaSelection.mode === "all") {
+      return new Set(cinemas);
+    }
+
+    return new Set(
+      cinemaSelection.names.filter((cinemaName) =>
+        cinemas.includes(cinemaName)
+      )
+    );
+  }, [cinemas, cinemaSelection]);
+
+  const selectedCinemaCount = selectedCinemas.size;
+  const allCinemasSelected =
+    cinemas.length === 0 || selectedCinemaCount === cinemas.length;
+  const cinemaFilterActive =
+    cinemas.length > 0 && selectedCinemaCount < cinemas.length;
+  const noCinemasSelected =
+    cinemas.length > 0 && selectedCinemaCount === 0;
+
+  const handleToggleCinema = (cinemaName) => {
+    setCinemaSelection((currentSelection) => {
+      const nextSelection = new Set(
+        currentSelection.mode === "all"
+          ? cinemas
+          : currentSelection.names.filter((name) => cinemas.includes(name))
+      );
+
+      if (nextSelection.has(cinemaName)) {
+        nextSelection.delete(cinemaName);
+      } else {
+        nextSelection.add(cinemaName);
+      }
+
+      if (nextSelection.size === cinemas.length) {
+        return {
+          mode: "all",
+          names: [],
+        };
+      }
+
+      return {
+        mode: "custom",
+        names: cinemas.filter((name) => nextSelection.has(name)),
+      };
+    });
+  };
+
+  const handleSelectAllCinemas = () => {
+    setCinemaSelection({
+      mode: "all",
+      names: [],
+    });
+  };
+
+  const handleClearAllCinemas = () => {
+    setCinemaSelection({
+      mode: "custom",
+      names: [],
+    });
+  };
 
   const ratingsByTmdbId = useMemo(() => {
     const ratings = new Map();
@@ -79,16 +147,16 @@ export default function App() {
   }, [trakt.ratings]);
 
   const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase();
+    const titleQuery = search.trim().toLowerCase();
 
     return screenings.filter((screening) => {
-      if (cinema !== "all" && screening.cinema_name !== cinema) {
+      if (!selectedCinemas.has(screening.cinema_name)) {
         return false;
       }
 
       if (
-        query &&
-        !screening.movie_title.toLowerCase().includes(query)
+        titleQuery &&
+        !screening.movie_title.toLowerCase().includes(titleQuery)
       ) {
         return false;
       }
@@ -107,7 +175,13 @@ export default function App() {
 
       return true;
     });
-  }, [screenings, search, cinema, minRating, ratingsByTmdbId]);
+  }, [
+    screenings,
+    search,
+    selectedCinemas,
+    minRating,
+    ratingsByTmdbId,
+  ]);
 
   const groups = useMemo(() => {
     const grouped = new Map();
@@ -135,6 +209,19 @@ export default function App() {
     traktSummary = `${trakt.ratings.length} movie rating${
       trakt.ratings.length === 1 ? "" : "s"
     }`;
+  }
+
+  let emptyMessage = "No upcoming screenings match your current filters.";
+
+  if (noCinemasSelected) {
+    emptyMessage =
+      "No cinemas are selected. Select at least one cinema to see screenings.";
+  } else if (
+    allCinemasSelected &&
+    search.trim() === "" &&
+    minRating === 0
+  ) {
+    emptyMessage = "No upcoming screenings found.";
   }
 
   return (
@@ -232,20 +319,14 @@ export default function App() {
           />
         </label>
 
-        <select
-          className="filter-select cinema-filter"
-          value={cinema}
-          onChange={(event) => setCinema(event.target.value)}
-          aria-label="Filter by cinema"
-        >
-          <option value="all">All cinemas</option>
-
-          {cinemas.map((cinemaName) => (
-            <option key={cinemaName} value={cinemaName}>
-              {cinemaName}
-            </option>
-          ))}
-        </select>
+        <CinemaMultiSelect
+          cinemas={cinemas}
+          selectedCinemas={selectedCinemas}
+          onToggleCinema={handleToggleCinema}
+          onSelectAll={handleSelectAllCinemas}
+          onClearAll={handleClearAllCinemas}
+          disabled={status !== "ready" || cinemas.length === 0}
+        />
 
         <select
           className="filter-select rating-filter"
@@ -292,11 +373,7 @@ export default function App() {
       {SUPABASE_CONFIGURED &&
         status === "ready" &&
         groups.length === 0 && (
-          <div className="status">
-            {minRating > 0
-              ? `No upcoming screenings match your ${minRating}+ Trakt rating filter.`
-              : "No upcoming screenings found."}
-          </div>
+          <div className="status">{emptyMessage}</div>
         )}
 
       {SUPABASE_CONFIGURED &&
@@ -319,7 +396,13 @@ export default function App() {
           <span>
             {filtered.length} upcoming screening
             {filtered.length === 1 ? "" : "s"}
-            {cinema !== "all" ? ` at ${cinema}` : ""}.
+            {cinemaFilterActive
+              ? selectedCinemaCount === 0
+                ? " with no cinemas selected."
+                : ` across ${selectedCinemaCount} selected cinema${
+                    selectedCinemaCount === 1 ? "" : "s"
+                  }.`
+              : "."}
           </span>
         )}
       </footer>
