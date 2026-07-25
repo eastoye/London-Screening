@@ -1,5 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import CinemaMultiSelect from "./CinemaMultiSelect.jsx";
+import DateTimeFilter from "./DateTimeFilter.jsx";
+import {
+  DEFAULT_DATE_TIME_FILTER,
+  createDateTimeMatcher,
+  isDefaultDateTimeFilter,
+} from "./dateTimeFilter.js";
 import { fetchAllUpcomingScreenings } from "./screeningsApi.js";
 import { SUPABASE_CONFIGURED } from "./supabaseClient.js";
 import { londonDateKey } from "./time.js";
@@ -29,6 +35,9 @@ export default function App() {
     mode: "all",
     names: [],
   });
+  const [dateTimeFilter, setDateTimeFilter] = useState(() => ({
+    ...DEFAULT_DATE_TIME_FILTER,
+  }));
   const [minRating, setMinRating] = useState(0);
   const trakt = useTrakt();
 
@@ -93,6 +102,8 @@ export default function App() {
     cinemas.length > 0 && selectedCinemaCount < cinemas.length;
   const noCinemasSelected =
     cinemas.length > 0 && selectedCinemaCount === 0;
+  const dateTimeFilterActive =
+    !isDefaultDateTimeFilter(dateTimeFilter);
 
   const handleToggleCinema = (cinemaName) => {
     setCinemaSelection((currentSelection) => {
@@ -146,6 +157,11 @@ export default function App() {
     return ratings;
   }, [trakt.ratings]);
 
+  const matchesDateTime = useMemo(
+    () => createDateTimeMatcher(dateTimeFilter),
+    [dateTimeFilter]
+  );
+
   const filtered = useMemo(() => {
     const titleQuery = search.trim().toLowerCase();
 
@@ -158,6 +174,10 @@ export default function App() {
         titleQuery &&
         !screening.movie_title.toLowerCase().includes(titleQuery)
       ) {
+        return false;
+      }
+
+      if (!matchesDateTime(screening.start_time)) {
         return false;
       }
 
@@ -179,6 +199,7 @@ export default function App() {
     screenings,
     search,
     selectedCinemas,
+    matchesDateTime,
     minRating,
     ratingsByTmdbId,
   ]);
@@ -219,6 +240,7 @@ export default function App() {
   } else if (
     allCinemasSelected &&
     search.trim() === "" &&
+    !dateTimeFilterActive &&
     minRating === 0
   ) {
     emptyMessage = "No upcoming screenings found.";
@@ -326,6 +348,12 @@ export default function App() {
           onSelectAll={handleSelectAllCinemas}
           onClearAll={handleClearAllCinemas}
           disabled={status !== "ready" || cinemas.length === 0}
+        />
+
+        <DateTimeFilter
+          value={dateTimeFilter}
+          onApply={setDateTimeFilter}
+          disabled={status !== "ready"}
         />
 
         <select
