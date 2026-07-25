@@ -11,7 +11,7 @@ const SUPABASE_ANON_KEY = (
 
 const TOKEN_STORAGE_KEY = "london_screenings_trakt_token";
 const PAGE_SIZE = 100;
-const MAX_PAGES = 100;
+const MAX_PAGES = 1000;
 const REFRESH_MARGIN_MS = 2 * 60 * 1000;
 
 export const TRAKT_CONFIGURED = Boolean(
@@ -38,10 +38,12 @@ function isToken(value) {
 
 function normaliseToken(value) {
   if (!isToken(value)) return null;
+
   return {
     access_token: value.access_token,
     refresh_token: value.refresh_token,
-    token_type: typeof value.token_type === "string" ? value.token_type : "bearer",
+    token_type:
+      typeof value.token_type === "string" ? value.token_type : "bearer",
     expires_in: Number(value.expires_in),
     scope: typeof value.scope === "string" ? value.scope : "public",
     created_at: Number(value.created_at),
@@ -50,16 +52,26 @@ function normaliseToken(value) {
 
 export function saveTraktToken(token) {
   const valid = normaliseToken(token);
-  if (!valid) throw new Error("Trakt returned an invalid token.");
+
+  if (!valid) {
+    throw new Error("Trakt returned an invalid token.");
+  }
+
   localStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(valid));
 }
 
 export function loadTraktToken() {
   const raw = localStorage.getItem(TOKEN_STORAGE_KEY);
+
   if (!raw) return null;
+
   try {
     const token = normaliseToken(JSON.parse(raw));
-    if (!token) localStorage.removeItem(TOKEN_STORAGE_KEY);
+
+    if (!token) {
+      localStorage.removeItem(TOKEN_STORAGE_KEY);
+    }
+
     return token;
   } catch {
     localStorage.removeItem(TOKEN_STORAGE_KEY);
@@ -75,12 +87,14 @@ export function getTraktAuthorizationUrl(state) {
   if (!TRAKT_CONFIGURED) {
     throw new Error("Trakt is not configured for this site yet.");
   }
+
   const params = new URLSearchParams({
     response_type: "code",
     client_id: TRAKT_CLIENT_ID,
     redirect_uri: TRAKT_REDIRECT_URI,
     state,
   });
+
   return `https://trakt.tv/oauth/authorize?${params.toString()}`;
 }
 
@@ -90,20 +104,28 @@ async function callTokenFunction(payload) {
   }
 
   let response;
+
   try {
-    response = await fetch(`${SUPABASE_URL}/functions/v1/trakt-token-exchange`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        apikey: SUPABASE_ANON_KEY,
-      },
-      body: JSON.stringify({ ...payload, redirect_uri: TRAKT_REDIRECT_URI }),
-    });
+    response = await fetch(
+      `${SUPABASE_URL}/functions/v1/trakt-token-exchange`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: SUPABASE_ANON_KEY,
+        },
+        body: JSON.stringify({
+          ...payload,
+          redirect_uri: TRAKT_REDIRECT_URI,
+        }),
+      }
+    );
   } catch {
     throw new Error("The Trakt connection service could not be reached.");
   }
 
   let data = {};
+
   try {
     data = await response.json();
   } catch {
@@ -115,17 +137,28 @@ async function callTokenFunction(payload) {
       typeof data.error === "string"
         ? data.error
         : "Trakt could not complete the connection.";
-    if (response.status === 401) throw new TraktAuthError(message);
+
+    if (response.status === 401) {
+      throw new TraktAuthError(message);
+    }
+
     throw new Error(message);
   }
 
   const token = normaliseToken(data);
-  if (!token) throw new Error("Trakt returned an invalid token.");
+
+  if (!token) {
+    throw new Error("Trakt returned an invalid token.");
+  }
+
   return token;
 }
 
 export function exchangeTraktCode(code) {
-  return callTokenFunction({ action: "exchange", code });
+  return callTokenFunction({
+    action: "exchange",
+    code,
+  });
 }
 
 export function refreshTraktToken(refreshToken) {
@@ -141,35 +174,75 @@ function tokenNeedsRefresh(token) {
 }
 
 async function ensureFreshToken(token) {
-  if (!tokenNeedsRefresh(token)) return token;
+  if (!tokenNeedsRefresh(token)) {
+    return token;
+  }
+
   return refreshTraktToken(token.refresh_token);
+}
+
+function traktRequestHeaders(token) {
+  return {
+    Authorization: `Bearer ${token.access_token}`,
+    "trakt-api-version": "2",
+    "trakt-api-key": TRAKT_CLIENT_ID,
+    "Content-Type": "application/json",
+  };
+}
+
+function paginationPageCount(response) {
+  const rawValue = response.headers.get(
+    "X-Pagination-Page-Count"
+  );
+
+  if (!rawValue) return null;
+
+  const value = Number(rawValue);
+
+  return Number.isInteger(value) && value >= 0
+    ? value
+    : null;
+}
+
+function paginationIsComplete(response, page, itemCount) {
+  const pageCount = paginationPageCount(response);
+
+  if (pageCount !== null) {
+    return pageCount === 0 || page >= pageCount;
+  }
+
+  return itemCount < PAGE_SIZE;
 }
 
 async function fetchRatingsPages(token) {
   const ratingsByTmdbId = new Map();
 
   for (let page = 1; page <= MAX_PAGES; page += 1) {
-    const url = new URL(`${TRAKT_API_BASE}/users/me/ratings/movies`);
+    const url = new URL(
+      `${TRAKT_API_BASE}/users/me/ratings/movies`
+    );
+
     url.searchParams.set("page", String(page));
     url.searchParams.set("limit", String(PAGE_SIZE));
 
     const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${token.access_token}`,
-        "trakt-api-version": "2",
-        "trakt-api-key": TRAKT_CLIENT_ID,
-        "Content-Type": "application/json",
-      },
+      headers: traktRequestHeaders(token),
     });
 
     if (response.status === 401) {
-      throw new TraktAuthError("Your Trakt connection has expired.");
+      throw new TraktAuthError(
+        "Your Trakt connection has expired."
+      );
     }
+
     if (!response.ok) {
-      throw new Error(`Trakt ratings could not be loaded (${response.status}).`);
+      throw new Error(
+        `Trakt ratings could not be loaded (${response.status}).`
+      );
     }
 
     const items = await response.json();
+
     if (!Array.isArray(items)) {
       throw new Error("Trakt returned invalid ratings data.");
     }
@@ -177,29 +250,115 @@ async function fetchRatingsPages(token) {
     for (const item of items) {
       const tmdbId = Number(item?.movie?.ids?.tmdb);
       const rating = Number(item?.rating);
-      if (!Number.isInteger(tmdbId) || tmdbId <= 0) continue;
-      if (!Number.isInteger(rating) || rating < 1 || rating > 10) continue;
+
+      if (
+        !Number.isInteger(tmdbId) ||
+        tmdbId <= 0
+      ) {
+        continue;
+      }
+
+      if (
+        !Number.isInteger(rating) ||
+        rating < 1 ||
+        rating > 10
+      ) {
+        continue;
+      }
+
       ratingsByTmdbId.set(tmdbId, {
         tmdbId,
         rating,
-        title: typeof item.movie.title === "string" ? item.movie.title : "",
+        title:
+          typeof item.movie.title === "string"
+            ? item.movie.title
+            : "",
         year: Number.isInteger(Number(item.movie.year))
           ? Number(item.movie.year)
           : null,
       });
     }
 
-    const pageCountHeader = response.headers.get("X-Pagination-Page-Count");
-    const pageCount = pageCountHeader ? Number(pageCountHeader) : null;
     if (
-      items.length < PAGE_SIZE ||
-      (Number.isFinite(pageCount) && pageCount > 0 && page >= pageCount)
+      paginationIsComplete(
+        response,
+        page,
+        items.length
+      )
     ) {
-      break;
+      return Array.from(ratingsByTmdbId.values());
     }
   }
 
-  return Array.from(ratingsByTmdbId.values());
+  throw new Error(
+    "Trakt returned too many ratings pages to load safely."
+  );
+}
+
+async function fetchWatchlistPages(token) {
+  const watchlistTmdbIds = new Set();
+
+  for (let page = 1; page <= MAX_PAGES; page += 1) {
+    const url = new URL(
+      `${TRAKT_API_BASE}/users/me/watchlist/movies/added`
+    );
+
+    url.searchParams.set("page", String(page));
+    url.searchParams.set("limit", String(PAGE_SIZE));
+
+    const response = await fetch(url, {
+      headers: traktRequestHeaders(token),
+    });
+
+    if (response.status === 401) {
+      throw new TraktAuthError(
+        "Your Trakt connection has expired."
+      );
+    }
+
+    if (!response.ok) {
+      throw new Error(
+        `Your Trakt watchlist could not be loaded (${response.status}).`
+      );
+    }
+
+    const items = await response.json();
+
+    if (!Array.isArray(items)) {
+      throw new Error(
+        "Trakt returned invalid watchlist data."
+      );
+    }
+
+    for (const item of items) {
+      const tmdbId = Number(item?.movie?.ids?.tmdb);
+
+      if (
+        !Number.isInteger(tmdbId) ||
+        tmdbId <= 0
+      ) {
+        continue;
+      }
+
+      watchlistTmdbIds.add(tmdbId);
+    }
+
+    if (
+      paginationIsComplete(
+        response,
+        page,
+        items.length
+      )
+    ) {
+      return Array.from(watchlistTmdbIds).sort(
+        (firstId, secondId) => firstId - secondId
+      );
+    }
+  }
+
+  throw new Error(
+    "Trakt returned too many watchlist pages to load safely."
+  );
 }
 
 export async function fetchAllTraktRatings(token) {
@@ -207,12 +366,55 @@ export async function fetchAllTraktRatings(token) {
 
   try {
     const ratings = await fetchRatingsPages(currentToken);
-    return { token: currentToken, ratings };
-  } catch (error) {
-    if (!(error instanceof TraktAuthError)) throw error;
 
-    currentToken = await refreshTraktToken(currentToken.refresh_token);
+    return {
+      token: currentToken,
+      ratings,
+    };
+  } catch (error) {
+    if (!(error instanceof TraktAuthError)) {
+      throw error;
+    }
+
+    currentToken = await refreshTraktToken(
+      currentToken.refresh_token
+    );
+
     const ratings = await fetchRatingsPages(currentToken);
-    return { token: currentToken, ratings };
+
+    return {
+      token: currentToken,
+      ratings,
+    };
+  }
+}
+
+export async function fetchAllTraktWatchlist(token) {
+  let currentToken = await ensureFreshToken(token);
+
+  try {
+    const watchlistTmdbIds =
+      await fetchWatchlistPages(currentToken);
+
+    return {
+      token: currentToken,
+      watchlistTmdbIds,
+    };
+  } catch (error) {
+    if (!(error instanceof TraktAuthError)) {
+      throw error;
+    }
+
+    currentToken = await refreshTraktToken(
+      currentToken.refresh_token
+    );
+
+    const watchlistTmdbIds =
+      await fetchWatchlistPages(currentToken);
+
+    return {
+      token: currentToken,
+      watchlistTmdbIds,
+    };
   }
 }
