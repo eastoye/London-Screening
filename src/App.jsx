@@ -288,23 +288,22 @@ export default function App() {
         tmdbId = possibleTmdbId;
       }
 
-      if (minRating > 0) {
+      if (minRating > 0 || watchlistOnly) {
         const userRating =
           ratingsByTmdbId.get(tmdbId);
 
-        if (
-          userRating === undefined ||
-          userRating < minRating
-        ) {
+        const matchesRating =
+          minRating > 0 &&
+          userRating !== undefined &&
+          userRating >= minRating;
+
+        const matchesWatchlist =
+          watchlistOnly &&
+          watchlistTmdbIdSet.has(tmdbId);
+
+        if (!matchesRating && !matchesWatchlist) {
           return false;
         }
-      }
-
-      if (
-        watchlistOnly &&
-        !watchlistTmdbIdSet.has(tmdbId)
-      ) {
-        return false;
       }
 
       return true;
