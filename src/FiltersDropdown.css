@@ -1,0 +1,301 @@
+.filters-dropdown {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 120px;
+}
+
+.filters-dropdown-trigger {
+  display: flex;
+  width: 100%;
+  min-width: 120px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  padding: 11px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 15px;
+  line-height: 1.5;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.filters-dropdown-trigger:hover {
+  border-color: var(--ink-soft);
+}
+
+.filters-dropdown-trigger:focus-visible {
+  border-color: var(--ink-soft);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.05);
+}
+
+.filters-dropdown-trigger.is-filtered {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.filters-dropdown-trigger:disabled {
+  background: #f0efec;
+  color: var(--ink-mute);
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+
+.filters-dropdown-trigger-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filters-dropdown-trigger-content {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 7px;
+}
+
+.filters-dropdown-count {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.filters-dropdown-chevron {
+  flex: none;
+  color: var(--ink-mute);
+  transition: transform 0.15s;
+}
+
+.filters-dropdown-trigger[aria-expanded="true"]
+  .filters-dropdown-chevron {
+  transform: rotate(180deg);
+}
+
+.filters-dropdown-panel {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  z-index: 20;
+  width: 310px;
+  max-width: calc(100vw - 36px);
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
+}
+
+.filters-dropdown-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.filters-dropdown-heading {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.filters-dropdown-reset {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.filters-dropdown-reset:hover {
+  text-decoration: underline;
+}
+
+.filters-dropdown-reset:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.filters-dropdown-reset:disabled {
+  color: var(--ink-mute);
+  cursor: default;
+  opacity: 0.65;
+  text-decoration: none;
+}
+
+.filters-dropdown-options {
+  padding: 8px 6px;
+}
+
+.filters-dropdown-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 7px;
+  border-radius: 7px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.filters-dropdown-option:hover {
+  background: var(--bg);
+}
+
+.filters-dropdown-option:focus-within {
+  background: var(--bg);
+  outline: 2px solid var(--line-strong);
+  outline-offset: -2px;
+}
+
+.filters-dropdown-option.is-disabled {
+  color: var(--ink-mute);
+  cursor: not-allowed;
+}
+
+.filters-dropdown-option.is-disabled:hover {
+  background: transparent;
+}
+
+.filters-dropdown-option input {
+  width: 17px;
+  height: 17px;
+  margin: 2px 0 0;
+  flex: none;
+  border: 1.5px solid var(--line-strong);
+  border-radius: 3px;
+  outline: none;
+  background-color: transparent;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 14px 14px;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.filters-dropdown-option input:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.filters-dropdown-option input:checked {
+  border-color: var(--accent);
+  background-color: transparent;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M3 8.5 6.4 12 13 4.5' fill='none' stroke='%23b8341a' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+}
+
+.filters-dropdown-option input:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(184, 52, 26, 0.14);
+}
+
+.filters-dropdown-option input:disabled {
+  border-color: var(--line-strong);
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.filters-dropdown-option-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.filters-dropdown-option-title {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.filters-dropdown-option-description {
+  color: var(--ink-mute);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.filters-dropdown-status {
+  margin: 0;
+  padding: 0 13px 12px 40px;
+  color: var(--ink-mute);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.filters-dropdown-status.error {
+  color: var(--accent);
+}
+
+.filters-dropdown-footer {
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.filters-dropdown-apply {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  background: var(--accent);
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s, box-shadow 0.15s;
+}
+
+.filters-dropdown-apply:hover {
+  opacity: 0.92;
+}
+
+.filters-dropdown-apply:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(184, 52, 26, 0.2);
+}
+
+.filters-dropdown-apply:disabled {
+  border-color: var(--line-strong);
+  background: #f0efec;
+  color: var(--ink-mute);
+  cursor: default;
+  opacity: 1;
+}
+
+@media (max-width: 600px) {
+  .filters-dropdown {
+    flex: 1 1 120px;
+    min-width: 0;
+  }
+
+  .filters-dropdown-trigger {
+    min-width: 0;
+  }
+
+  .filters-dropdown-panel {
+    right: auto;
+    left: 0;
+    width: min(320px, calc(100vw - 28px));
+    max-width: none;
+  }
+}

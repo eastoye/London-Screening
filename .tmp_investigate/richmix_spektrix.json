@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Just a moment</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            padding: 64px 16px;
+            background-color: #f9f9f9;
+        }
+        .container {
+            max-width: 360px;
+            margin: 0 auto;
+            padding: 32px;
+            background: #fff;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            border-radius: 10px;
+        }
+        h1 {
+            margin-top: 0;
+            font-size: 24px;
+            color: #333;
+        }
+        p {
+            font-size: 16px;
+            color: #666;
+            line-height: 1.25;
+        }
+        .spinner {
+            display: inline-block;
+            width: 14px;
+            height: 14px;
+            margin-right: 5px;
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-top: 4px solid #333;
+            border-radius: 50%;
+            animation: spin 0.75s linear infinite;
+            margin-bottom: -1px;
+        }
+
+        .main-content h1,
+        #challenge-running,
+        #challenge-body-text,
+        .footer {
+            display: none;
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        @media (prefers-color-scheme: dark) {
+            body {
+                background-color: #121212;
+                color: #e0e0e0;
+            }
+            h1 {
+                color: #e0e0e0;
+            }
+            p {
+                color: #b8b8b8;
+            }
+            .container {
+                background: #1e1e1e;
+                box-shadow: 0 0 10px rgba(255, 255, 255, 0.1);
+            }
+            .spinner {
+                border: 4px solid rgba(255, 255, 255, 0.1);
+                border-top: 4px solid #e0e0e0;
+            }
+        }
+    </style>
+<meta http-equiv="refresh" content="360"></head>
+<body>
+    <div class="container">
+        <h1>
+            <div class="spinner"></div>
+            Just a moment
+        </h1>
+        <p>We're verifying you are human. This may take a few seconds.</p>
+        <div class="main-wrapper" role="main"><div class="main-content"><noscript><div class="h2"><span id="challenge-error-text">Enable JavaScript and cookies to continue</span></div></noscript></div></div><script>(function(){window._cf_chl_opt = {cFPWv: 'b',cH: 'N3T74ayc.VsWXPveBwlZlyPctJS7AkYX88RvyjuxSYE-1784584740-1.2.1.1-hrnhpvoXgfgpmp9cueKPV61cBCKP4oPpzV.rkCHeDYZRfjryH9pK42gxDKi_vzMl',cITimeS: '1784584740',cRay: 'a1e53b011a340922',cTplB: '0',cTplC:1,cTplO:0,cTplV:5,cType: 'managed',cUPMDTk:"/richmix/api/v3/events?__cf_chl_tk=6.pI_LQ3hfKMSwr0PCOQm17jkANZOj.pp8ci1v9vLZ4-1784584740-1.0.1.1-K_JVUr8GssJU0ZG.fpN2FiEY44MrbYunIcngqFi8VYU",cvId: '3',cZone: 'spektrix.richmix.org.uk',fa:"/richmix/api/v3/events?__cf_chl_f_tk=6.pI_LQ3hfKMSwr0PCOQm17jkANZOj.pp8ci1v9vLZ4-1784584740-1.0.1.1-K_JVUr8GssJU0ZG.fpN2FiEY44MrbYunIcngqFi8VYU",md: 'qN576qLsdMOj4vlqJ2ZnRStw2LEvUy50NAHP2X_esrs-1784584740-1.2.1.1-GmETiyyu51K6375_p14gVLNtmM2LXZd1TQq8eLXWjH1ExlkjYtVwnoiunq548ntf_kkU.vZT5A5jyEuAgqXFLVa_yriEJMJGbXlrwOQr8K10DSBgkUoVGjo303qt1dagP8.Fhmc_gORYVwzvlEgXCW2Vpc2tCvNppj3amGjdWO.iszX9oM79Guo3p48Rmr6fE93ffhYjTzikKpEzT0LzQM2Zlh7ZDN_SJTEXn1Qo8lEmxTF2rHbekbLBDLv8dZvopP.5tAf6jyh6quaAYUXEuux4ncDSYWyXCflvlT8EtRRAJ0AWiUF0b1.H5MgyiX5iM_tyNO33CkU1k5dFYIEgrmU.zYc5DM_d5NIKtHkRbSndI.7eCGMmIgN2VnsYO7isC6F5mrtGVaN.7wDxPFEPiD8RqFnRehzVDMdprCDwCiYnmJ7LlMmimf27h1wpjYnEhEtqbv1eKZ8eaFkeEPAGSbhanGnYBcvgN49wtKM87VEZtaQgrGQsVYg_kBoGaLuz05mVOm5eMTgUj3v5pSJmv3tTqrefVy_OVRb3k5SuSlAEgd8LhpBw6jD3Mq_GCzqweHLvjsU5TsGC8WHbd_2NYsbsJPIIzA5JjZpA6l1jp83X2XlF4f8GU49phq.zxWKxha_sYHcL7.1NzrGnEV82CNhJg0uZqWAqmoknN8fTHeZczXSp9SgVq6W1fl52frMD6FaNRfMsvd6NSe.I8c9QGam5Gj..3G_PB12e3zNdCNrDPOHvXHM.Osvy0.ThH5FIkC_IV1aEDbBcxObxS05Vw0fWNSgqIGO1.bnEmzNqlAsvZwBythy15s_14XSUJZC8..vD2InuSnckG0_pWHR7SAVZiS4Xjd70T15u3PfiWBQ3CahrY0Avw_OX1_1AAtexSJnNluCWtejyslvkAyQ437WPLqc9F.U8G6tN6_W0IuQLmxE55oICgffAis9AT8TYAfa3CUl.pw2IcVdzZNShXe3tib4m_0p0sTm38Bx4izlzSTLdLP7xfQcirTQQKcwcwMDxOmlj8SaDERTLvRvOHej_T6Q2wurslQGCDqM7AvZNqfm9MyMh6XXZH8rkEYb_pkz8PmkDBNkuISOPAduNfZlvTGA66iAMSlq.s6lX9_GZamwsO6.jc.oDvdGv1k_f70P9g1pdoroUmBum2R7FU8vCeugK88FEXrRL0iMiLW9o2N6pyNJQOaDM49PSvC4.',mdrd: 'vfUBD538hJLUvfg_EP26tlESnaa4OyuK4NarT1j4j6A-1784584740-1.2.1.1-hSlyT89pS8XDs0uROWFTB_E29KbDx_CEMAH70dH9OXPsN4z4DcMqd.XW4dJjTecyDnvHF_N.cG1YMjBlmgtwu9pjJ4899BrTeGcuX3cI67jHcC9BrFAGr78sB2FEw0UOMt9QYEL_HqXUb3Nc655vU7qWuQ64xoUuOIfb.Q3vOcZIvnWos91M8tMrs.TuXfTXKf_Zj42ZZiMcG2UyyV9vGoaSnR6xFpYds5o11yNjDyz2ZSlFYobhmYIz1ERxeL1kDom5ZNXk_K_dM1vzL6jxFIF1pdcm03Q7O5MFw9_01kSpf_jCBhB4rfZ0AOlFSSYnDx4RW0kSZdjCRaDM2nIzgeKc3VTIwOv.TejkGzK5yk0',};var a = document.createElement('script');a.src = '/cdn-cgi/challenge-platform/h/b/orchestrate/chl_page/v1?ray=a1e53b011a340922';window._cf_chl_opt.cOgUHash = location.hash === '' && location.href.indexOf('#') !== -1 ? '#' : location.hash;window._cf_chl_opt.cOgUQuery = location.search === '' && location.href.slice(0, location.href.length - window._cf_chl_opt.cOgUHash.length).indexOf('?') !== -1 ? '?' : location.search;if (window.history && window.history.replaceState) {var ogU = location.pathname + window._cf_chl_opt.cOgUQuery + window._cf_chl_opt.cOgUHash;history.replaceState(null, null,"/richmix/api/v3/events?__cf_chl_rt_tk=6.pI_LQ3hfKMSwr0PCOQm17jkANZOj.pp8ci1v9vLZ4-1784584740-1.0.1.1-K_JVUr8GssJU0ZG.fpN2FiEY44MrbYunIcngqFi8VYU"+ window._cf_chl_opt.cOgUHash);a.onload = function() {history.replaceState(null, null, ogU);}}document.getElementsByTagName('head')[0].appendChild(a);}());</script>
+    </div>
+</body>
+</html>
