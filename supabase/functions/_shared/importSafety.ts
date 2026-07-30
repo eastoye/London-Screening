@@ -2,6 +2,12 @@
 // Handles run locking, minimum-count checks, upsert, and deactivation.
 
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
+import type {
+  AccessibilityFeature,
+  AvailabilityStatus,
+  ProgrammeType,
+  ProjectionFormat,
+} from "./screeningMetadata.ts";
 
 export const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -98,6 +104,10 @@ export interface ScreeningRecord {
   booking_url: string | null;
   format: string | null;
   sold_out: boolean;
+  projection_formats?: ProjectionFormat[];
+  accessibility_features?: AccessibilityFeature[];
+  programme_types?: ProgrammeType[];
+  availability_status?: AvailabilityStatus;
   source_reference: string;
   last_seen_at: string;
   active?: boolean;
