@@ -1,349 +1,295 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
-import {
-  DEFAULT_DATE_TIME_FILTER,
-  dateTimeFilterLabel,
-  getLondonTodayKey,
-  isDefaultDateTimeFilter,
-  isValidDateTimeFilter,
-  normaliseDateTimeFilter,
-} from "./dateTimeFilter.js";
-import "./DateTimeFilter.css";
+import { londonDateKey } from "./time.js";
 
-function ChevronIcon() {
+export const DEFAULT_DATE_TIME_FILTER = Object.freeze({
+  datePreset: "all",
+  customDate: "",
+  timeFrom: "",
+  timeTo: "",
+});
+
+const VALID_DATE_PRESETS = new Set([
+  "all",
+  "today",
+  "tomorrow",
+  "weekend",
+  "next7",
+  "custom",
+]);
+
+const londonTimeFormatter = new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Europe/London",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+});
+
+function isDateKey(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function addDaysToDateKey(dateKey, numberOfDays) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day + numberOfDays));
+
+  return [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function weekdayForDateKey(dateKey) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+}
+
+function getWeekendRange(todayKey) {
+  const weekday = weekdayForDateKey(todayKey);
+
+  if (weekday === 6) {
+    return {
+      start: todayKey,
+      end: addDaysToDateKey(todayKey, 1),
+    };
+  }
+
+  if (weekday === 0) {
+    return {
+      start: todayKey,
+      end: todayKey,
+    };
+  }
+
+  const daysUntilSaturday = 6 - weekday;
+  const saturday = addDaysToDateKey(todayKey, daysUntilSaturday);
+
+  return {
+    start: saturday,
+    end: addDaysToDateKey(saturday, 1),
+  };
+}
+
+function isTimeValue(value) {
+  return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
+}
+
+function timeValueToMinutes(value) {
+  if (!isTimeValue(value)) {
+    return null;
+  }
+
+  const [hour, minute] = value.split(":").map(Number);
+
+  return hour * 60 + minute;
+}
+
+function londonTimeInMinutes(isoTimestamp) {
+  const date = new Date(isoTimestamp);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  const parts = londonTimeFormatter.formatToParts(date);
+  const hourPart = parts.find((part) => part.type === "hour");
+  const minutePart = parts.find((part) => part.type === "minute");
+  const hour = Number(hourPart?.value);
+  const minute = Number(minutePart?.value);
+
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
+    return null;
+  }
+
+  return (hour % 24) * 60 + minute;
+}
+
+export function normaliseDateTimeFilter(value) {
+  const datePreset = VALID_DATE_PRESETS.has(value?.datePreset)
+    ? value.datePreset
+    : DEFAULT_DATE_TIME_FILTER.datePreset;
+
+  const customDate =
+    typeof value?.customDate === "string" && isDateKey(value.customDate)
+      ? value.customDate
+      : "";
+
+  const timeFrom =
+    typeof value?.timeFrom === "string" && isTimeValue(value.timeFrom)
+      ? value.timeFrom
+      : "";
+
+  const timeTo =
+    typeof value?.timeTo === "string" && isTimeValue(value.timeTo)
+      ? value.timeTo
+      : "";
+
+  return {
+    datePreset,
+    customDate,
+    timeFrom,
+    timeTo,
+  };
+}
+
+export function isDefaultDateTimeFilter(value) {
+  const filter = normaliseDateTimeFilter(value);
+
   return (
-    <svg
-      className="date-time-filter-chevron"
-      width="12"
-      height="12"
-      viewBox="0 0 12 12"
-      aria-hidden="true"
-    >
-      <path fill="currentColor" d="M2 4l4 4 4-4" />
-    </svg>
+    filter.datePreset === "all" &&
+    !filter.timeFrom &&
+    !filter.timeTo
   );
 }
 
-function filtersMatch(firstValue, secondValue) {
-  const first = normaliseDateTimeFilter(firstValue);
-  const second = normaliseDateTimeFilter(secondValue);
+export function isValidDateTimeFilter(value) {
+  const filter = normaliseDateTimeFilter(value);
 
-  return (
-    first.datePreset === second.datePreset &&
-    first.customDate === second.customDate &&
-    first.timeFrom === second.timeFrom &&
-    first.timeTo === second.timeTo
-  );
+  if (filter.datePreset === "custom" && !filter.customDate) {
+    return false;
+  }
+
+  if (filter.timeFrom && filter.timeTo) {
+    return filter.timeFrom <= filter.timeTo;
+  }
+
+  return true;
 }
 
-export default function DateTimeFilter({
-  value,
-  onApply,
-  disabled = false,
-}) {
-  const appliedFilter = useMemo(
-    () => normaliseDateTimeFilter(value),
-    [value]
-  );
+export function getLondonTodayKey() {
+  return londonDateKey(new Date());
+}
 
-  const [isOpen, setIsOpen] = useState(false);
-  const [draftFilter, setDraftFilter] = useState(appliedFilter);
+export function createDateTimeMatcher(value, now = new Date()) {
+  const filter = normaliseDateTimeFilter(value);
+  const todayKey = londonDateKey(now);
 
-  const containerRef = useRef(null);
-  const triggerRef = useRef(null);
-  const panelId = useId();
-  const headingId = useId();
-  const datePresetId = useId();
-  const customDateId = useId();
-  const timeRangeId = useId();
-  const timeFromId = useId();
-  const timeToId = useId();
-  const timeRangeErrorId = useId();
+  let exactDate = null;
+  let rangeStart = null;
+  let rangeEnd = null;
 
-  const todayKey = getLondonTodayKey();
-  const triggerLabel = dateTimeFilterLabel(appliedFilter);
-  const filterIsActive = !isDefaultDateTimeFilter(appliedFilter);
-  const draftIsDefault = isDefaultDateTimeFilter(draftFilter);
-  const draftIsValid = isValidDateTimeFilter(draftFilter);
-  const hasPendingChanges = !filtersMatch(appliedFilter, draftFilter);
-  const timeRangeIsInvalid =
-    Boolean(draftFilter.timeFrom) &&
-    Boolean(draftFilter.timeTo) &&
-    draftFilter.timeFrom > draftFilter.timeTo;
+  switch (filter.datePreset) {
+    case "today":
+      exactDate = todayKey;
+      break;
 
-  useEffect(() => {
-    setDraftFilter(normaliseDateTimeFilter(value));
-  }, [value]);
+    case "tomorrow":
+      exactDate = addDaysToDateKey(todayKey, 1);
+      break;
 
-  useEffect(() => {
-    if (!isOpen) return undefined;
-
-    const handlePointerDown = (event) => {
-      if (!containerRef.current?.contains(event.target)) {
-        setIsOpen(false);
-      }
-    };
-
-    const handleFocusIn = (event) => {
-      if (!containerRef.current?.contains(event.target)) {
-        setIsOpen(false);
-      }
-    };
-
-    document.addEventListener("pointerdown", handlePointerDown);
-    document.addEventListener("focusin", handleFocusIn);
-
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-      document.removeEventListener("focusin", handleFocusIn);
-    };
-  }, [isOpen]);
-
-  useEffect(() => {
-    if (disabled) {
-      setIsOpen(false);
+    case "weekend": {
+      const weekend = getWeekendRange(todayKey);
+      rangeStart = weekend.start;
+      rangeEnd = weekend.end;
+      break;
     }
-  }, [disabled]);
 
-  const handleContainerKeyDown = (event) => {
-    if (event.key !== "Escape" || !isOpen) return;
+    case "next7":
+      rangeStart = todayKey;
+      rangeEnd = addDaysToDateKey(todayKey, 6);
+      break;
 
-    event.preventDefault();
-    setIsOpen(false);
-    triggerRef.current?.focus();
+    case "custom":
+      exactDate = filter.customDate || null;
+      break;
+
+    default:
+      break;
+  }
+
+  return (startTime) => {
+    const screeningDate = londonDateKey(startTime);
+
+    if (filter.datePreset === "custom" && !exactDate) {
+      return false;
+    }
+
+    if (exactDate && screeningDate !== exactDate) {
+      return false;
+    }
+
+    if (
+      rangeStart &&
+      rangeEnd &&
+      (screeningDate < rangeStart || screeningDate > rangeEnd)
+    ) {
+      return false;
+    }
+
+    if (!filter.timeFrom && !filter.timeTo) {
+      return true;
+    }
+
+    const screeningTime = londonTimeInMinutes(startTime);
+
+    if (screeningTime === null) {
+      return false;
+    }
+
+    const timeFrom = timeValueToMinutes(filter.timeFrom);
+    const timeTo = timeValueToMinutes(filter.timeTo);
+
+    if (timeFrom !== null && screeningTime < timeFrom) {
+      return false;
+    }
+
+    if (timeTo !== null && screeningTime > timeTo) {
+      return false;
+    }
+
+    return true;
+  };
+}
+
+function customDateLabel(dateKey) {
+  if (!isDateKey(dateKey)) {
+    return "Custom date";
+  }
+
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day, 12));
+
+  return new Intl.DateTimeFormat("en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(date);
+}
+
+export function dateTimeFilterLabel(value) {
+  const filter = normaliseDateTimeFilter(value);
+
+  if (isDefaultDateTimeFilter(filter)) {
+    return "All dates & times";
+  }
+
+  const dateLabels = {
+    all: "Any date",
+    today: "Today",
+    tomorrow: "Tomorrow",
+    weekend: "This weekend",
+    next7: "Next 7 days",
+    custom: customDateLabel(filter.customDate),
   };
 
-  const handleTriggerClick = () => {
-    if (disabled) return;
+  const dateLabel = dateLabels[filter.datePreset];
+  let timeLabel = "";
 
-    setIsOpen((current) => !current);
-  };
+  if (filter.timeFrom && filter.timeTo) {
+    timeLabel = `${filter.timeFrom}–${filter.timeTo}`;
+  } else if (filter.timeFrom) {
+    timeLabel = `From ${filter.timeFrom}`;
+  } else if (filter.timeTo) {
+    timeLabel = `Until ${filter.timeTo}`;
+  }
 
-  const handleDatePresetChange = (event) => {
-    const nextDatePreset = event.target.value;
+  if (!timeLabel) {
+    return dateLabel;
+  }
 
-    setDraftFilter((current) => ({
-      ...current,
-      datePreset: nextDatePreset,
-      customDate:
-        nextDatePreset === "custom" && !current.customDate
-          ? todayKey
-          : current.customDate,
-    }));
-  };
+  if (filter.datePreset === "all") {
+    return timeLabel;
+  }
 
-  const handleCustomDateChange = (event) => {
-    setDraftFilter((current) => ({
-      ...current,
-      customDate: event.target.value,
-    }));
-  };
-
-  const handleTimeChange = (fieldName) => (event) => {
-    setDraftFilter((current) => ({
-      ...current,
-      [fieldName]: event.target.value,
-    }));
-  };
-
-  const handleReset = () => {
-    setDraftFilter({
-      ...DEFAULT_DATE_TIME_FILTER,
-    });
-  };
-
-  const handleApply = () => {
-    if (!hasPendingChanges || !draftIsValid) return;
-
-    onApply(normaliseDateTimeFilter(draftFilter));
-    setIsOpen(false);
-    triggerRef.current?.focus();
-  };
-
-  return (
-    <div
-      className="date-time-filter"
-      ref={containerRef}
-      onKeyDown={handleContainerKeyDown}
-    >
-      <button
-        ref={triggerRef}
-        className={`date-time-filter-trigger${
-          filterIsActive ? " is-filtered" : ""
-        }`}
-        type="button"
-        aria-expanded={isOpen}
-        aria-controls={panelId}
-        aria-haspopup="dialog"
-        aria-label={`Date and time filter: ${triggerLabel}`}
-        disabled={disabled}
-        onClick={handleTriggerClick}
-      >
-        <span className="date-time-filter-trigger-label">
-          {triggerLabel}
-        </span>
-
-        <ChevronIcon />
-      </button>
-
-      {isOpen && (
-        <div
-          id={panelId}
-          className="date-time-filter-panel"
-          role="dialog"
-          aria-labelledby={headingId}
-        >
-          <div className="date-time-filter-header">
-            <h2 id={headingId} className="date-time-filter-heading">
-              Date &amp; Time
-            </h2>
-
-            <button
-              className="date-time-filter-reset"
-              type="button"
-              disabled={draftIsDefault}
-              onClick={handleReset}
-            >
-              Reset
-            </button>
-          </div>
-
-          <div className="date-time-filter-fields">
-            <label
-              className="date-time-filter-field"
-              htmlFor={datePresetId}
-            >
-              <span className="date-time-filter-label">Date</span>
-
-              <select
-                id={datePresetId}
-                className="date-time-filter-select"
-                value={draftFilter.datePreset}
-                onChange={handleDatePresetChange}
-              >
-                <option value="all">Any date</option>
-                <option value="today">Today</option>
-                <option value="tomorrow">Tomorrow</option>
-                <option value="weekend">This weekend</option>
-                <option value="next7">Next 7 days</option>
-                <option value="custom">Custom date</option>
-              </select>
-            </label>
-
-            {draftFilter.datePreset === "custom" && (
-              <label
-                className="date-time-filter-field"
-                htmlFor={customDateId}
-              >
-                <span className="date-time-filter-label">
-                  Choose date
-                </span>
-
-                <input
-                  id={customDateId}
-                  className="date-time-filter-date"
-                  type="date"
-                  min={todayKey}
-                  value={draftFilter.customDate}
-                  onChange={handleCustomDateChange}
-                />
-
-                {!draftFilter.customDate && (
-                  <p
-                    className="date-time-filter-error"
-                    role="status"
-                  >
-                    Choose a date before applying this filter.
-                  </p>
-                )}
-              </label>
-            )}
-
-            <div
-              className="date-time-filter-field"
-              role="group"
-              aria-labelledby={timeRangeId}
-            >
-              <span
-                id={timeRangeId}
-                className="date-time-filter-label"
-              >
-                Time range
-              </span>
-
-              <div className="date-time-filter-time-range">
-                <label
-                  className="date-time-filter-time-field"
-                  htmlFor={timeFromId}
-                >
-                  <span className="date-time-filter-time-label">
-                    From
-                  </span>
-
-                  <input
-                    id={timeFromId}
-                    className="date-time-filter-time"
-                    type="time"
-                    step="60"
-                    value={draftFilter.timeFrom}
-                    aria-invalid={timeRangeIsInvalid}
-                    aria-describedby={
-                      timeRangeIsInvalid ? timeRangeErrorId : undefined
-                    }
-                    onChange={handleTimeChange("timeFrom")}
-                  />
-                </label>
-
-                <label
-                  className="date-time-filter-time-field"
-                  htmlFor={timeToId}
-                >
-                  <span className="date-time-filter-time-label">
-                    To
-                  </span>
-
-                  <input
-                    id={timeToId}
-                    className="date-time-filter-time"
-                    type="time"
-                    step="60"
-                    value={draftFilter.timeTo}
-                    aria-invalid={timeRangeIsInvalid}
-                    aria-describedby={
-                      timeRangeIsInvalid ? timeRangeErrorId : undefined
-                    }
-                    onChange={handleTimeChange("timeTo")}
-                  />
-                </label>
-              </div>
-
-              {timeRangeIsInvalid && (
-                <p
-                  id={timeRangeErrorId}
-                  className="date-time-filter-error"
-                  role="alert"
-                >
-                  From must be earlier than or equal to To.
-                </p>
-              )}
-            </div>
-
-            <p className="date-time-filter-help">
-              Screening dates and times use the Europe/London time zone.
-            </p>
-          </div>
-
-          <div className="date-time-filter-footer">
-            <button
-              className="date-time-filter-apply"
-              type="button"
-              disabled={!hasPendingChanges || !draftIsValid}
-              onClick={handleApply}
-            >
-              Apply
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+  return `${dateLabel} · ${timeLabel}`;
 }
