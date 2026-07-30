@@ -140,7 +140,8 @@
 }
 
 .date-time-filter-select,
-.date-time-filter-date {
+.date-time-filter-date,
+.date-time-filter-time {
   width: 100%;
   min-width: 0;
   padding: 9px 34px 9px 10px;
@@ -162,14 +163,38 @@
   -webkit-appearance: none;
 }
 
-.date-time-filter-date {
+.date-time-filter-date,
+.date-time-filter-time {
   padding-right: 10px;
 }
 
 .date-time-filter-select:focus,
-.date-time-filter-date:focus {
+.date-time-filter-date:focus,
+.date-time-filter-time:focus {
   border-color: var(--ink-soft);
   box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.05);
+}
+
+.date-time-filter-time[aria-invalid="true"] {
+  border-color: var(--accent);
+}
+
+.date-time-filter-time-range {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.date-time-filter-time-field {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+}
+
+.date-time-filter-time-label {
+  color: var(--ink-mute);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .date-time-filter-help {
