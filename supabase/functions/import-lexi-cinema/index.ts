@@ -12,13 +12,6 @@ import {
   type ScreeningRecord,
   type ImportRunContext,
 } from "../_shared/importSafety.ts";
-import { buildStructuredMetadata } from "./metadata.ts";
-import type {
-  AccessibilityFeature,
-  AvailabilityStatus,
-  ProgrammeType,
-  ProjectionFormat,
-} from "../_shared/screeningMetadata.ts";
 
 const LEXI_URL = "https://thelexicinema.co.uk/TheLexiCinema.dll/WhatsOn";
 const BOOKING_BASE = "https://thelexicinema.co.uk/TheLexiCinema.dll/";
@@ -56,7 +49,7 @@ interface LexiData {
 }
 
 // Build a human-readable format/label string from performance flags + notes.
-function buildFormat(p: LexiPerformance): string | null {
+function buildFormat(p: LexiPerformance): string {
   const labels: string[] = [];
   if (p.BF === "Y") labels.push("Baby-Friendly");
   if (p.FF === "Y") labels.push("Family Fun");
@@ -106,7 +99,6 @@ function parseLexi(html: string): ParsedScreening[] {
     const title = decodeEntities(stripTags(ev.Title)).trim();
     if (!title) continue;
     for (const p of ev.Performances) {
-      const metadata = buildStructuredMetadata(ev, p);
       const timeParts = parse24hTime(p.StartTimeAndNotes);
       if (!timeParts) {
         results.push({
@@ -116,7 +108,6 @@ function parseLexi(html: string): ParsedScreening[] {
           performance_id: String(p.ID),
           format: buildFormat(p),
           sold_out: p.IsSoldOut === "Y",
-          ...metadata,
           source_reference: `${SOURCE_PREFIX}:${p.ID}`,
           parse_error: `Unparseable time: "${p.StartTimeAndNotes}"`,
         });
@@ -131,7 +122,6 @@ function parseLexi(html: string): ParsedScreening[] {
           performance_id: String(p.ID),
           format: buildFormat(p),
           sold_out: p.IsSoldOut === "Y",
-          ...metadata,
           source_reference: `${SOURCE_PREFIX}:${p.ID}`,
           parse_error: `Unparseable date: "${p.StartDate}"`,
         });
@@ -145,7 +135,6 @@ function parseLexi(html: string): ParsedScreening[] {
         performance_id: String(p.ID),
         format: buildFormat(p),
         sold_out: p.IsSoldOut === "Y",
-        ...metadata,
         source_reference: `${SOURCE_PREFIX}:${p.ID}`,
       });
     }
@@ -160,10 +149,6 @@ interface ParsedScreening {
   performance_id: string;
   format: string | null;
   sold_out: boolean;
-  projection_formats: ProjectionFormat[];
-  accessibility_features: AccessibilityFeature[];
-  programme_types: ProgrammeType[];
-  availability_status: AvailabilityStatus;
   source_reference: string;
   parse_error?: string;
 }
@@ -264,10 +249,6 @@ Deno.serve(async (req: Request) => {
       booking_url: p.booking_url || null,
       format: p.format,
       sold_out: p.sold_out,
-      projection_formats: p.projection_formats,
-      accessibility_features: p.accessibility_features,
-      programme_types: p.programme_types,
-      availability_status: p.availability_status,
       source_reference: p.source_reference,
       last_seen_at: new Date().toISOString(),
     }));
@@ -301,10 +282,6 @@ Deno.serve(async (req: Request) => {
       booking_url: p.booking_url || null,
       format: p.format,
       sold_out: p.sold_out,
-      projection_formats: p.projection_formats,
-      accessibility_features: p.accessibility_features,
-      programme_types: p.programme_types,
-      availability_status: p.availability_status,
     })),
   });
 });

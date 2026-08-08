@@ -3,8 +3,7 @@ import { londonDateKey } from "./time.js";
 export const DEFAULT_DATE_TIME_FILTER = Object.freeze({
   datePreset: "all",
   customDate: "",
-  timeFrom: "",
-  timeTo: "",
+  timePeriod: "any",
 });
 
 const VALID_DATE_PRESETS = new Set([
@@ -16,10 +15,16 @@ const VALID_DATE_PRESETS = new Set([
   "custom",
 ]);
 
-const londonTimeFormatter = new Intl.DateTimeFormat("en-GB", {
+const VALID_TIME_PERIODS = new Set([
+  "any",
+  "morning",
+  "afternoon",
+  "evening",
+]);
+
+const londonHourFormatter = new Intl.DateTimeFormat("en-GB", {
   timeZone: "Europe/London",
   hour: "2-digit",
-  minute: "2-digit",
   hourCycle: "h23",
 });
 
@@ -69,38 +74,12 @@ function getWeekendRange(todayKey) {
   };
 }
 
-function isTimeValue(value) {
-  return /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
-}
-
-function timeValueToMinutes(value) {
-  if (!isTimeValue(value)) {
-    return null;
-  }
-
-  const [hour, minute] = value.split(":").map(Number);
-
-  return hour * 60 + minute;
-}
-
-function londonTimeInMinutes(isoTimestamp) {
-  const date = new Date(isoTimestamp);
-
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-
-  const parts = londonTimeFormatter.formatToParts(date);
+function londonHour(isoTimestamp) {
+  const parts = londonHourFormatter.formatToParts(new Date(isoTimestamp));
   const hourPart = parts.find((part) => part.type === "hour");
-  const minutePart = parts.find((part) => part.type === "minute");
   const hour = Number(hourPart?.value);
-  const minute = Number(minutePart?.value);
 
-  if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
-    return null;
-  }
-
-  return (hour % 24) * 60 + minute;
+  return Number.isInteger(hour) ? hour % 24 : null;
 }
 
 export function normaliseDateTimeFilter(value) {
@@ -108,51 +87,32 @@ export function normaliseDateTimeFilter(value) {
     ? value.datePreset
     : DEFAULT_DATE_TIME_FILTER.datePreset;
 
+  const timePeriod = VALID_TIME_PERIODS.has(value?.timePeriod)
+    ? value.timePeriod
+    : DEFAULT_DATE_TIME_FILTER.timePeriod;
+
   const customDate =
     typeof value?.customDate === "string" && isDateKey(value.customDate)
       ? value.customDate
       : "";
 
-  const timeFrom =
-    typeof value?.timeFrom === "string" && isTimeValue(value.timeFrom)
-      ? value.timeFrom
-      : "";
-
-  const timeTo =
-    typeof value?.timeTo === "string" && isTimeValue(value.timeTo)
-      ? value.timeTo
-      : "";
-
   return {
     datePreset,
     customDate,
-    timeFrom,
-    timeTo,
+    timePeriod,
   };
 }
 
 export function isDefaultDateTimeFilter(value) {
   const filter = normaliseDateTimeFilter(value);
 
-  return (
-    filter.datePreset === "all" &&
-    !filter.timeFrom &&
-    !filter.timeTo
-  );
+  return filter.datePreset === "all" && filter.timePeriod === "any";
 }
 
 export function isValidDateTimeFilter(value) {
   const filter = normaliseDateTimeFilter(value);
 
-  if (filter.datePreset === "custom" && !filter.customDate) {
-    return false;
-  }
-
-  if (filter.timeFrom && filter.timeTo) {
-    return filter.timeFrom <= filter.timeTo;
-  }
-
-  return true;
+  return filter.datePreset !== "custom" || Boolean(filter.customDate);
 }
 
 export function getLondonTodayKey() {
@@ -215,28 +175,25 @@ export function createDateTimeMatcher(value, now = new Date()) {
       return false;
     }
 
-    if (!filter.timeFrom && !filter.timeTo) {
+    if (filter.timePeriod === "any") {
       return true;
     }
 
-    const screeningTime = londonTimeInMinutes(startTime);
+    const hour = londonHour(startTime);
 
-    if (screeningTime === null) {
+    if (hour === null) {
       return false;
     }
 
-    const timeFrom = timeValueToMinutes(filter.timeFrom);
-    const timeTo = timeValueToMinutes(filter.timeTo);
-
-    if (timeFrom !== null && screeningTime < timeFrom) {
-      return false;
+    if (filter.timePeriod === "morning") {
+      return hour < 12;
     }
 
-    if (timeTo !== null && screeningTime > timeTo) {
-      return false;
+    if (filter.timePeriod === "afternoon") {
+      return hour >= 12 && hour < 18;
     }
 
-    return true;
+    return hour >= 18;
   };
 }
 
@@ -272,24 +229,17 @@ export function dateTimeFilterLabel(value) {
     custom: customDateLabel(filter.customDate),
   };
 
+  const timeLabels = {
+    morning: "Morning",
+    afternoon: "Afternoon",
+    evening: "Evening",
+  };
+
   const dateLabel = dateLabels[filter.datePreset];
-  let timeLabel = "";
 
-  if (filter.timeFrom && filter.timeTo) {
-    timeLabel = `${filter.timeFrom}–${filter.timeTo}`;
-  } else if (filter.timeFrom) {
-    timeLabel = `From ${filter.timeFrom}`;
-  } else if (filter.timeTo) {
-    timeLabel = `Until ${filter.timeTo}`;
-  }
-
-  if (!timeLabel) {
+  if (filter.timePeriod === "any") {
     return dateLabel;
   }
 
-  if (filter.datePreset === "all") {
-    return timeLabel;
-  }
-
-  return `${dateLabel} · ${timeLabel}`;
+  return `${dateLabel} · ${timeLabels[filter.timePeriod]}`;
 }

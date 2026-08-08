@@ -30,8 +30,7 @@ function filtersMatch(firstValue, secondValue) {
   return (
     first.datePreset === second.datePreset &&
     first.customDate === second.customDate &&
-    first.timeFrom === second.timeFrom &&
-    first.timeTo === second.timeTo
+    first.timePeriod === second.timePeriod
   );
 }
 
@@ -54,10 +53,7 @@ export default function DateTimeFilter({
   const headingId = useId();
   const datePresetId = useId();
   const customDateId = useId();
-  const timeRangeId = useId();
-  const timeFromId = useId();
-  const timeToId = useId();
-  const timeRangeErrorId = useId();
+  const timePeriodId = useId();
 
   const todayKey = getLondonTodayKey();
   const triggerLabel = dateTimeFilterLabel(appliedFilter);
@@ -65,11 +61,6 @@ export default function DateTimeFilter({
   const draftIsDefault = isDefaultDateTimeFilter(draftFilter);
   const draftIsValid = isValidDateTimeFilter(draftFilter);
   const hasPendingChanges = !filtersMatch(appliedFilter, draftFilter);
-
-  const timeRangeIsInvalid =
-    Boolean(draftFilter.timeFrom) &&
-    Boolean(draftFilter.timeTo) &&
-    draftFilter.timeFrom > draftFilter.timeTo;
 
   useEffect(() => {
     setDraftFilter(normaliseDateTimeFilter(value));
@@ -139,10 +130,10 @@ export default function DateTimeFilter({
     }));
   };
 
-  const handleTimeChange = (fieldName) => (event) => {
+  const handleTimePeriodChange = (event) => {
     setDraftFilter((current) => ({
       ...current,
-      [fieldName]: event.target.value,
+      timePeriod: event.target.value,
     }));
   };
 
@@ -194,7 +185,10 @@ export default function DateTimeFilter({
           aria-labelledby={headingId}
         >
           <div className="date-time-filter-header">
-            <h2 id={headingId} className="date-time-filter-heading">
+            <h2
+              id={headingId}
+              className="date-time-filter-heading"
+            >
               Date &amp; Time
             </h2>
 
@@ -213,7 +207,9 @@ export default function DateTimeFilter({
               className="date-time-filter-field"
               htmlFor={datePresetId}
             >
-              <span className="date-time-filter-label">Date</span>
+              <span className="date-time-filter-label">
+                Date
+              </span>
 
               <select
                 id={datePresetId}
@@ -259,74 +255,32 @@ export default function DateTimeFilter({
               </label>
             )}
 
-            <div
+            <label
               className="date-time-filter-field"
-              role="group"
-              aria-labelledby={timeRangeId}
+              htmlFor={timePeriodId}
             >
-              <span
-                id={timeRangeId}
-                className="date-time-filter-label"
-              >
-                Time range
+              <span className="date-time-filter-label">
+                Time
               </span>
 
-              <div className="date-time-filter-time-range">
-                <label
-                  className="date-time-filter-time-field"
-                  htmlFor={timeFromId}
-                >
-                  <span className="date-time-filter-time-label">
-                    From
-                  </span>
-
-                  <input
-                    id={timeFromId}
-                    className="date-time-filter-time"
-                    type="time"
-                    step="60"
-                    value={draftFilter.timeFrom}
-                    aria-invalid={timeRangeIsInvalid}
-                    aria-describedby={
-                      timeRangeIsInvalid ? timeRangeErrorId : undefined
-                    }
-                    onChange={handleTimeChange("timeFrom")}
-                  />
-                </label>
-
-                <label
-                  className="date-time-filter-time-field"
-                  htmlFor={timeToId}
-                >
-                  <span className="date-time-filter-time-label">
-                    To
-                  </span>
-
-                  <input
-                    id={timeToId}
-                    className="date-time-filter-time"
-                    type="time"
-                    step="60"
-                    value={draftFilter.timeTo}
-                    aria-invalid={timeRangeIsInvalid}
-                    aria-describedby={
-                      timeRangeIsInvalid ? timeRangeErrorId : undefined
-                    }
-                    onChange={handleTimeChange("timeTo")}
-                  />
-                </label>
-              </div>
-
-              {timeRangeIsInvalid && (
-                <p
-                  id={timeRangeErrorId}
-                  className="date-time-filter-error"
-                  role="alert"
-                >
-                  From must be earlier than or equal to To.
-                </p>
-              )}
-            </div>
+              <select
+                id={timePeriodId}
+                className="date-time-filter-select"
+                value={draftFilter.timePeriod}
+                onChange={handleTimePeriodChange}
+              >
+                <option value="any">Any time</option>
+                <option value="morning">
+                  Morning — before 12:00
+                </option>
+                <option value="afternoon">
+                  Afternoon — 12:00 to 17:59
+                </option>
+                <option value="evening">
+                  Evening — 18:00 onwards
+                </option>
+              </select>
+            </label>
 
             <p className="date-time-filter-help">
               Screening dates and times use the Europe/London time zone.

@@ -17,8 +17,6 @@ export interface SpektrixConfig {
   baseUrl: string;
   // Source prefix for source_reference, e.g. "barbican", "kiln"
   sourcePrefix: string;
-  // Optional public booking route that accepts Spektrix webInstanceId.
-  publicBookingBaseUrl?: string;
 }
 
 export interface SpektrixEvent {
@@ -185,15 +183,9 @@ export async function fetchPlanMap(
 // Build the booking URL for an instance using the Spektrix ChooseSeats.aspx pattern.
 export function buildBookingUrl(
   config: SpektrixConfig,
-  eventInstanceId: string,
-  webInstanceId?: string | null
+  eventInstanceId: string
 ): string {
-  if (config.publicBookingBaseUrl && webInstanceId) {
-    const base = config.publicBookingBaseUrl.replace(/\/+$/, "");
-    return base + "/" + encodeURIComponent(webInstanceId) + "/";
-  }
-  return config.baseUrl + "/" + config.client +
-    "/website/ChooseSeats.aspx?resize=true&EventInstanceId=" + encodeURIComponent(eventInstanceId);
+  return `${config.baseUrl}/${config.client}/website/ChooseSeats.aspx?resize=true&EventInstanceId=${eventInstanceId}`;
 }
 
 // Parse the start time from an instance. The Spektrix API provides both
@@ -332,7 +324,7 @@ export function buildScreening(
     movie_title: event.name.trim(),
     start_time_iso: startTime,
     event_instance_id: eventInstanceId,
-    booking_url: buildBookingUrl(config, eventInstanceId, instance.webInstanceId),
+    booking_url: buildBookingUrl(config, eventInstanceId),
     plan_id: instance.planId,
     venue_name: venueName,
     screen_name: screenName,
@@ -437,4 +429,3 @@ export async function fetchAllScreenings(
     errors,
   };
 }
-
