@@ -25,6 +25,38 @@ const config: SpektrixConfig = {
   publicBookingBaseUrl: "https://richmix.org.uk/book/instance",
 };
 
+const CERTIFICATE_RE = /\s*\((?:U|PG|12A?|15|18|R18|TBC|CERT(?:IFICATE)?\s*TBC)\)\s*$/i;
+const NON_DISPLAY_FORMAT_RE = /^(?:film|u|pg|12a?|15|18|r18|tbc|age rating|cert(?:ificate)?\s*tbc)$/i;
+
+// Rich Mix's Spektrix event name includes presentation labels and the BBFC
+// certificate. Keep those out of movie_title so poster/title matching sees the
+// actual film name used on Rich Mix's public cinema page.
+function cleanMovieTitle(title: string): string {
+  return title
+    .replace(CERTIFICATE_RE, "")
+    .replace(/^(?:Film|Premiere|Black In Season)\s*:\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// The legacy importer fell back to every Spektrix label when `format` was
+// empty. That exposed classification/certificate values such as "Film" and
+// "12A" on the listing. Only retain a real format value here.
+function cleanDisplayFormat(format: string | null): string | null {
+  if (!format) return null;
+  const value = format.trim();
+  if (!value || NON_DISPLAY_FORMAT_RE.test(value)) return null;
+  return value;
+}
+
+// Spektrix documents that ChooseSeats.aspx accepts the initial integer portion
+// of an API v3 EventInstanceId. Rich Mix's public ticket domain uses that form.
+function richMixBookingUrl(eventInstanceId: string, fallback: string): string {
+  const publicId = eventInstanceId.match(/^\d+/)?.[0];
+  if (!publicId) return fallback;
+  return `https://tickets.richmix.org.uk/richmix/website/ChooseSeats.aspx?EventInstanceId=${publicId}&resize=true`;
+}
+
 // Rich Mix classifies cinema events via several attributes:
 //   attribute_PrimaryCategory: "Film"
 //   attribute_COGEventProgramme: "FILM"
@@ -36,12 +68,17 @@ function isCinemaEvent(event: SpektrixEvent): boolean {
   const accountCodes = (event.attributes.attribute_AccountCodes as string) || "";
   const firstCategory = (event.attributes.attribute_COGFirstCategory as string) || "";
 
-  return (
+  const isFilm = (
     /film/i.test(primaryCategory) ||
     /film/i.test(programme) ||
     /^cin/i.test(accountCodes) ||
     /cinema/i.test(firstCategory)
   );
+
+  // This is a live talk/show listed in Rich Mix's Cinema section, not a film.
+  if (/^Film Stories Live\b/i.test(event.name)) return false;
+
+  return isFilm;
 }
 
 Deno.serve(async (req: Request) => {
@@ -103,10 +140,10 @@ Deno.serve(async (req: Request) => {
 
     const records: ScreeningRecord[] = result.screenings.map((s) => ({
       cinema_name: CINEMA_NAME,
-      movie_title: s.movie_title,
+      movie_title: cleanMovieTitle(s.movie_title),
       start_time: s.start_time_iso,
-      booking_url: s.booking_url,
-      format: s.format || (s.labels.length > 0 ? s.labels.join(", ") : null),
+      booking_url: richMixBookingUrl(s.event_instance_id, s.booking_url),
+      format: cleanDisplayFormat(s.format),
       sold_out: s.sold_out,
       source_reference: s.source_reference,
       last_seen_at: new Date().toISOString(),
@@ -137,10 +174,10 @@ Deno.serve(async (req: Request) => {
       import_started_at: startedIso,
       import_completed_at: new Date().toISOString(),
       examples: result.screenings.slice(0, 5).map((s) => ({
-        movie_title: s.movie_title,
+        movie_title: cleanMovieTitle(s.movie_title),
         start_time: s.start_time_iso,
         source_reference: s.source_reference,
-        booking_url: s.booking_url,
+        booking_url: richMixBookingUrl(s.event_instance_id, s.booking_url),
         screen: s.screen_name,
         venue: s.venue_name,
         format: s.format,
@@ -154,4 +191,3 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ success: false, error: msg }, 500);
   }
 });
-
