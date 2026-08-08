@@ -22,6 +22,7 @@ const config: SpektrixConfig = {
   client: "richmix",
   baseUrl: "https://system.spektrix.com",
   sourcePrefix: "richmix",
+  publicBookingBaseUrl: "https://richmix.org.uk/book/instance",
 };
 
 // Rich Mix classifies cinema events via several attributes:
@@ -153,3 +154,4 @@ Deno.serve(async (req: Request) => {
     return jsonResponse({ success: false, error: msg }, 500);
   }
 });
+
