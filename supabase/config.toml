@@ -1,0 +1,2 @@
+[functions.tmdb-search-helper]
+verify_jwt = false
