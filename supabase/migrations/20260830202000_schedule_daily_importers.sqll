@@ -1,0 +1,645 @@
+-- Daily London Screenings importer scheduler
+-- Production project: czsknzrtumbdweusfyhk
+-- Requires these Vault secrets to be configured outside source control:
+--   import_scheduler_project_url
+--   import_scheduler_publishable_key
+
+create extension if not exists pg_cron;
+create extension if not exists pg_net with schema extensions;
+
+-- Idempotently replace only the daily importer jobs managed by this file.
+select cron.unschedule(jobid)
+from cron.job
+where jobname like 'daily-import-%';
+
+select cron.schedule(
+  'daily-import-prince-charles',
+  '0 1 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-prince-charles',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-castle-cinema',
+  '4 1 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-castle-cinema',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-actone-cinema',
+  '8 1 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-actone-cinema',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-cine-lumiere',
+  '12 1 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-cine-lumiere',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-close-up',
+  '16 1 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-close-up',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-olympic-cinemas',
+  '20 1 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-olympic-cinemas',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-chiswick-cinema',
+  '24 1 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-chiswick-cinema',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-david-lean-cinema',
+  '28 1 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-david-lean-cinema',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-garden-cinema',
+  '32 1 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-garden-cinema',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-electric-cinemas',
+  '36 1 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-electric-cinemas',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-arthouse-crouch-end',
+  '40 1 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-arthouse-crouch-end',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-genesis-cinema',
+  '44 1 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-genesis-cinema',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-lexi-cinema',
+  '48 1 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-lexi-cinema',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-peckhamplex',
+  '52 1 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-peckhamplex',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-barbican-cinema',
+  '56 1 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-barbican-cinema',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-kiln-cinema',
+  '0 2 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-kiln-cinema',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-rich-mix',
+  '4 2 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-rich-mix',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-riverside-studios',
+  '8 2 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-riverside-studios',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-phoenix-cinema',
+  '12 2 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-phoenix-cinema',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-rio-cinema',
+  '16 2 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-rio-cinema',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-olympic-barnes',
+  '20 2 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-olympic-barnes',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-jw3-cinema',
+  '24 2 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-jw3-cinema',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-ica-cinema',
+  '28 2 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-ica-cinema',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-regent-street-cinema',
+  '32 2 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-regent-street-cinema',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-the-nickel',
+  '36 2 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-the-nickel',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-bfi-southbank',
+  '40 2 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-bfi-southbank',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-bfi-imax',
+  '44 2 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-bfi-imax',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-science-museum-imax',
+  '48 2 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-science-museum-imax',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-forest-cinema',
+  '52 2 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-forest-cinema',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+select cron.schedule(
+  'daily-import-arzner',
+  '56 2 * * *',
+  $job$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_project_url')
+      || '/functions/v1/import-arzner',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key'),
+      'apikey', (select decrypted_secret from vault.decrypted_secrets where name = 'import_scheduler_publishable_key')
+    ),
+    body := jsonb_build_object(
+      'trigger', 'daily-cron',
+      'scheduled_at', now()
+    ),
+    timeout_milliseconds := 150000
+  );
+  $job$
+);
+
+
