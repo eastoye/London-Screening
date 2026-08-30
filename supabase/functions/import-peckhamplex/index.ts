@@ -72,6 +72,19 @@ function normaliseTitle(title: string): string {
     .slice(0, 60);
 }
 
+function normaliseProgrammeTitle(rawTitle: string): { title: string; festivalLabel: string | null } {
+  const isTfff = /^\s*TFFF:\s*/i.test(rawTitle);
+  return {
+    title: rawTitle.replace(/^\s*TFFF:\s*/i, "").trim(),
+    festivalLabel: isTfff ? "TFFF" : null,
+  };
+}
+
+function mergeFormatLabels(...labels: Array<string | null | undefined>): string | null {
+  const unique = [...new Set(labels.map((label) => label?.trim()).filter((label): label is string => Boolean(label)))];
+  return unique.length > 0 ? unique.join(" · ") : null;
+}
+
 // Parse the by-day listings HTML fragment.
 // Structure:
 //   <h3>Tuesday 21st July 2026</h3>
@@ -114,7 +127,8 @@ function parseByDay(html: string, nowLondon: Date, labelPerfIds: Map<string, str
       const rawTitle = stripTags(filmMatch[1]).trim();
       const timesBody = filmMatch[3];
       if (!rawTitle) continue;
-      const movieTitle = decodeEntities(rawTitle);
+      const decodedTitle = decodeEntities(rawTitle);
+      const { title: movieTitle, festivalLabel } = normaliseProgrammeTitle(decodedTitle);
 
       const timeRegex = /<a class="btn btn-info"[^>]*href="(https:\/\/ticketing\.eu\.veezi\.com\/purchase\/(\d+)[^"]*)"[^>]*>([^<]+)<\/a>/g;
       let timeMatch: RegExpExecArray | null;
@@ -129,7 +143,7 @@ function parseByDay(html: string, nowLondon: Date, labelPerfIds: Map<string, str
             start_time_iso: null,
             booking_url: bookingUrl,
             performance_id: perfId,
-            format: labelPerfIds.get(perfId) || null,
+            format: mergeFormatLabels(labelPerfIds.get(perfId), festivalLabel),
             sold_out: false,
             source_reference: `${SOURCE_PREFIX}:${perfId}`,
             parse_error: `Unparseable time: "${timeText}"`,
@@ -142,7 +156,7 @@ function parseByDay(html: string, nowLondon: Date, labelPerfIds: Map<string, str
           start_time_iso: utc.toISOString(),
           booking_url: bookingUrl,
           performance_id: perfId,
-          format: labelPerfIds.get(perfId) || null,
+          format: mergeFormatLabels(labelPerfIds.get(perfId), festivalLabel),
           sold_out: false,
           source_reference: `${SOURCE_PREFIX}:${perfId}`,
         });
@@ -348,3 +362,4 @@ Deno.serve(async (req: Request) => {
     })),
   });
 });
+
