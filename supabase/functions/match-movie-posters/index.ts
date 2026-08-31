@@ -501,6 +501,19 @@ async function decideMatch(
   token: string,
   cleaned: CleanedTitle,
 ): Promise<MatchDecision> {
+  if (cleaned.queryTitle.length > 500) {
+    return {
+      status: "unmatched",
+      confidence: 0,
+      tmdbId: null,
+      posterPath: null,
+      releaseYear: cleaned.yearHint,
+      candidateTmdbId: null,
+      candidatePosterPath: null,
+      reason: "source title exceeds the TMDB query limit",
+    };
+  }
+
   if (cleaned.intentionallyUnmatchable) {
     return {
       status: "unmatched",
