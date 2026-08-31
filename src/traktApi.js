@@ -503,6 +503,7 @@ async function syncMovieBatches(token, path, items, responseSection, options = {
         path,
         batch.map((item) => ({
           ...(item.rating ? { rating: item.rating } : {}),
+          ...(item.watchedAt ? { watched_at: item.watchedAt } : {}),
           ids: { tmdb: item.tmdbId },
         }))
       );
@@ -558,6 +559,12 @@ export async function syncTraktImport(token, records, existingData = {}) {
       tmdbId: Number(record.selectedTmdbId),
       rating: record.rating,
     }));
+  const watchedAt = new Date().toISOString();
+
+  const historyItems = requestedRatingItems.map((item) => ({
+    tmdbId: item.tmdbId,
+    watchedAt,
+  }));
   const unchangedRatings = requestedRatingItems.filter(
     (item) => existingRatings.get(item.tmdbId) === item.rating
   );
@@ -571,6 +578,7 @@ export async function syncTraktImport(token, records, existingData = {}) {
   let currentToken = token;
   let watchlist = emptySyncSummary(requestedWatchlistItems.length);
   let ratings = emptySyncSummary(requestedRatingItems.length);
+  let history = emptySyncSummary(historyItems.length);
 
   watchlist.existing = requestedWatchlistItems.length - watchlistItems.length;
   ratings.existing = unchangedRatings.length;
@@ -590,6 +598,21 @@ export async function syncTraktImport(token, records, existingData = {}) {
     };
   }
 
+  if (historyItems.length) {
+    const result = await syncMovieBatches(
+      currentToken,
+      "/sync/history",
+      historyItems,
+      "movies"
+    );
+
+    currentToken = result.token;
+    history = {
+      ...result.summary,
+      requested: historyItems.length,
+    };
+  }
+
   if (ratingItems.length) {
     const result = await syncMovieBatches(
       currentToken,
@@ -606,5 +629,5 @@ export async function syncTraktImport(token, records, existingData = {}) {
     };
   }
 
-  return { token: currentToken, watchlist, ratings };
+  return { token: currentToken, watchlist, ratings, history };
 }
