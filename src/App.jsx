@@ -3,6 +3,7 @@ import CinemaMultiSelect from "./CinemaMultiSelect.jsx";
 import DateTimeFilter from "./DateTimeFilter.jsx";
 import FiltersDropdown from "./FiltersDropdown.jsx";
 import WatchDataModal from "./WatchDataModal.jsx";
+import MovieImportModal from "./MovieImportModal.jsx";
 import {
   DEFAULT_DATE_TIME_FILTER,
   createDateTimeMatcher,
@@ -20,6 +21,7 @@ export default function App() {
   const [errorMsg, setErrorMsg] = useState("");
   const [search, setSearch] = useState("");
   const [watchDataModalOpen, setWatchDataModalOpen] = useState(false);
+  const [movieImportModalOpen, setMovieImportModalOpen] = useState(false);
 
   const [cinemaSelection, setCinemaSelection] = useState({
     mode: "all",
@@ -189,6 +191,14 @@ export default function App() {
     setWatchDataModalOpen(false);
   }, []);
 
+  const openMovieImportModal = useCallback(() => {
+    setMovieImportModalOpen(true);
+  }, []);
+
+  const closeMovieImportModal = useCallback(() => {
+    setMovieImportModalOpen(false);
+  }, []);
+
   const connectTrakt = trakt.connect;
 
   const handleConnectTrakt = useCallback(() => {
@@ -347,6 +357,15 @@ export default function App() {
               <span className="trakt-summary">{traktSummary}</span>
 
               <div className="trakt-actions">
+                <button
+                  className="text-button"
+                  type="button"
+                  onClick={openMovieImportModal}
+                  disabled={traktBusy}
+                >
+                  Import movies
+                </button>
+
                 <button
                   className="text-button"
                   type="button"
@@ -525,6 +544,12 @@ export default function App() {
         onClose={closeWatchDataModal}
         onConnectTrakt={handleConnectTrakt}
         isConnecting={trakt.status === "exchanging"}
+      />
+
+      <MovieImportModal
+        isOpen={movieImportModalOpen}
+        onClose={closeMovieImportModal}
+        onImport={trakt.importMovies}
       />
     </div>
   );

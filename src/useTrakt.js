@@ -9,6 +9,7 @@ import {
   getTraktAuthorizationUrl,
   loadTraktToken,
   saveTraktToken,
+  syncTraktImport,
 } from "./traktApi.js";
 
 const OAUTH_STATE_KEY = "london_screenings_trakt_oauth_state";
@@ -405,6 +406,36 @@ export function useTrakt() {
     }
   }, [loadTraktData, token]);
 
+  const importMovies = useCallback(
+    async (records) => {
+      if (!token) {
+        throw new TraktAuthError("Connect Trakt before importing movies.");
+      }
+
+      try {
+        const result = await syncTraktImport(token, records, {
+          ratings,
+          watchlistTmdbIds,
+        });
+
+        saveTraktToken(result.token);
+        setToken(result.token);
+        await loadTraktData(result.token);
+
+        return result;
+      } catch (importError) {
+        if (importError instanceof TraktAuthError) {
+          clearConnection(
+            "Your Trakt connection expired. Please connect again.",
+            "error"
+          );
+        }
+        throw importError;
+      }
+    },
+    [clearConnection, loadTraktData, ratings, token, watchlistTmdbIds]
+  );
+
   return {
     status,
     error,
@@ -423,5 +454,6 @@ export function useTrakt() {
     connect,
     disconnect,
     refresh,
+    importMovies,
   };
 }

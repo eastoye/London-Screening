@@ -12,6 +12,7 @@ const SUPABASE_ANON_KEY = (
 const TOKEN_STORAGE_KEY = "london_screenings_trakt_token";
 const PAGE_SIZE = 100;
 const MAX_PAGES = 1000;
+const SYNC_BATCH_SIZE = 200;
 const REFRESH_MARGIN_MS = 2 * 60 * 1000;
 
 export const TRAKT_CONFIGURED = Boolean(
@@ -417,4 +418,193 @@ export async function fetchAllTraktWatchlist(token) {
       watchlistTmdbIds,
     };
   }
+}
+
+function syncCount(value, section, field) {
+  const count = Number(value?.[section]?.[field]);
+  return Number.isInteger(count) && count >= 0 ? count : 0;
+}
+
+function notFoundTmdbIds(value) {
+  const movies = Array.isArray(value?.not_found?.movies)
+    ? value.not_found.movies
+    : [];
+
+  return movies
+    .map((movie) => Number(movie?.ids?.tmdb))
+    .filter((id) => Number.isInteger(id) && id > 0);
+}
+
+async function postTraktSync(token, path, movies) {
+  const response = await fetch(`${TRAKT_API_BASE}${path}`, {
+    method: "POST",
+    headers: traktRequestHeaders(token),
+    body: JSON.stringify({ movies }),
+  });
+
+  if (response.status === 401) {
+    throw new TraktAuthError("Your Trakt connection has expired.");
+  }
+
+  const data = await response.json().catch(() => ({}));
+
+  if (!response.ok) {
+    const retryAfter = response.headers.get("Retry-After");
+    const suffix = response.status === 429 && retryAfter
+      ? ` Try again in about ${retryAfter} seconds.`
+      : "";
+    throw new Error(`Trakt could not save this batch (${response.status}).${suffix}`);
+  }
+
+  return data;
+}
+
+async function postTraktSyncWithRefresh(token, path, movies) {
+  let currentToken = await ensureFreshToken(token);
+
+  try {
+    return {
+      token: currentToken,
+      data: await postTraktSync(currentToken, path, movies),
+    };
+  } catch (error) {
+    if (!(error instanceof TraktAuthError)) throw error;
+
+    currentToken = await refreshTraktToken(currentToken.refresh_token);
+    return {
+      token: currentToken,
+      data: await postTraktSync(currentToken, path, movies),
+    };
+  }
+}
+
+function emptySyncSummary(requested = 0) {
+  return {
+    requested,
+    added: 0,
+    updated: 0,
+    existing: 0,
+    failed: 0,
+    failedTmdbIds: [],
+    errors: [],
+  };
+}
+
+async function syncMovieBatches(token, path, items, responseSection, options = {}) {
+  let currentToken = token;
+  const summary = emptySyncSummary(items.length);
+
+  for (let index = 0; index < items.length; index += SYNC_BATCH_SIZE) {
+    const batch = items.slice(index, index + SYNC_BATCH_SIZE);
+
+    try {
+      const result = await postTraktSyncWithRefresh(
+        currentToken,
+        path,
+        batch.map((item) => ({
+          ...(item.rating ? { rating: item.rating } : {}),
+          ids: { tmdb: item.tmdbId },
+        }))
+      );
+
+      currentToken = result.token;
+      const notFound = notFoundTmdbIds(result.data);
+      const notFoundSet = new Set(notFound);
+
+      if (options.classifyOperations) {
+        for (const item of batch) {
+          if (!notFoundSet.has(item.tmdbId)) {
+            summary[item.operation === "update" ? "updated" : "added"] += 1;
+          }
+        }
+      } else {
+        summary.added += syncCount(result.data, "added", responseSection);
+        summary.updated += syncCount(result.data, "updated", responseSection);
+        summary.existing += syncCount(result.data, "existing", responseSection);
+      }
+
+      summary.failed += notFound.length;
+      summary.failedTmdbIds.push(...notFound);
+    } catch (error) {
+      if (error instanceof TraktAuthError) throw error;
+
+      summary.failed += batch.length;
+      summary.failedTmdbIds.push(...batch.map((item) => item.tmdbId));
+      summary.errors.push(
+        error instanceof Error ? error.message : "A Trakt batch failed."
+      );
+    }
+  }
+
+  return { token: currentToken, summary };
+}
+
+export async function syncTraktImport(token, records, existingData = {}) {
+  const existingWatchlist = new Set(
+    (existingData.watchlistTmdbIds || []).map(Number)
+  );
+  const existingRatings = new Map(
+    (existingData.ratings || []).map((item) => [Number(item.tmdbId), Number(item.rating)])
+  );
+  const requestedWatchlistItems = records
+    .filter((record) => record.watchlist)
+    .map((record) => ({ tmdbId: Number(record.selectedTmdbId) }));
+  const watchlistItems = requestedWatchlistItems.filter(
+    (item) => !existingWatchlist.has(item.tmdbId)
+  );
+  const requestedRatingItems = records
+    .filter((record) => Number.isInteger(record.rating))
+    .map((record) => ({
+      tmdbId: Number(record.selectedTmdbId),
+      rating: record.rating,
+    }));
+  const unchangedRatings = requestedRatingItems.filter(
+    (item) => existingRatings.get(item.tmdbId) === item.rating
+  );
+  const ratingItems = requestedRatingItems
+    .filter((item) => existingRatings.get(item.tmdbId) !== item.rating)
+    .map((item) => ({
+      ...item,
+      operation: existingRatings.has(item.tmdbId) ? "update" : "add",
+    }));
+
+  let currentToken = token;
+  let watchlist = emptySyncSummary(requestedWatchlistItems.length);
+  let ratings = emptySyncSummary(requestedRatingItems.length);
+
+  watchlist.existing = requestedWatchlistItems.length - watchlistItems.length;
+  ratings.existing = unchangedRatings.length;
+
+  if (watchlistItems.length) {
+    const result = await syncMovieBatches(
+      currentToken,
+      "/sync/watchlist",
+      watchlistItems,
+      "movies"
+    );
+    currentToken = result.token;
+    watchlist = {
+      ...result.summary,
+      requested: requestedWatchlistItems.length,
+      existing: watchlist.existing + result.summary.existing,
+    };
+  }
+
+  if (ratingItems.length) {
+    const result = await syncMovieBatches(
+      currentToken,
+      "/sync/ratings",
+      ratingItems,
+      "movies",
+      { classifyOperations: true }
+    );
+    currentToken = result.token;
+    ratings = {
+      ...result.summary,
+      requested: requestedRatingItems.length,
+      existing: ratings.existing,
+    };
+  }
+
+  return { token: currentToken, watchlist, ratings };
 }

@@ -3,7 +3,6 @@ import "./WatchDataModal.css";
 
 const TRAKT_JOIN_URL = "https://trakt.tv/auth/join";
 const TRAKT_SIGN_IN_URL = "https://trakt.tv/auth/signin";
-const TRAKT_IMPORT_URL = "https://app.trakt.tv/settings/data";
 const IMDB_RATINGS_URL = "https://www.imdb.com/list/ratings/";
 const IMDB_WATCHLIST_URL = "https://www.imdb.com/list/watchlist/";
 const LETTERBOXD_EXPORT_URL = "https://letterboxd.com/settings/data/";
@@ -16,10 +15,6 @@ const SERVICES = [
   {
     id: "letterboxd",
     name: "Letterboxd",
-  },
-  {
-    id: "tv-time",
-    name: "TV Time",
   },
 ];
 
@@ -137,23 +132,6 @@ function LetterboxdInstructions() {
   );
 }
 
-function TvTimeInstructions() {
-  return (
-    <div className="watch-data-service-copy">
-      <div className="watch-data-warning">
-        TV Time closed on 15 July 2026. You can only import its data if you
-        downloaded your export before it closed.
-      </div>
-
-      <ol>
-        <li>Find the original TV Time GDPR export ZIP you saved.</li>
-        <li>Do not unzip, rename or edit the file.</li>
-        <li>Upload the complete ZIP to Trakt.</li>
-      </ol>
-    </div>
-  );
-}
-
 export default function WatchDataModal({
   isOpen,
   onClose,
@@ -245,8 +223,6 @@ export default function WatchDataModal({
 
   if (service === "letterboxd") {
     serviceInstructions = <LetterboxdInstructions />;
-  } else if (service === "tv-time") {
-    serviceInstructions = <TvTimeInstructions />;
   } else {
     serviceInstructions = <ImdbInstructions />;
   }
@@ -323,7 +299,7 @@ export default function WatchDataModal({
               >
                 <span>
                   <strong>Import from another service</strong>
-                  <small>Move data from IMDb, Letterboxd or TV Time.</small>
+                  <small>Prepare an IMDb or Letterboxd export.</small>
                 </span>
                 <ArrowIcon />
               </button>
@@ -342,8 +318,8 @@ export default function WatchDataModal({
                 Move your data to Trakt
               </h2>
               <p id={descriptionId}>
-                London Screenings connects to Trakt only. Import your existing
-                data there first, then connect it here.
+                Export your existing data, connect Trakt, then review and
+                import the movies directly in London Screenings.
               </p>
             </div>
 
@@ -404,24 +380,21 @@ export default function WatchDataModal({
             <div className="watch-data-step">
               <span className="watch-data-step-number">3</span>
               <div className="watch-data-step-content">
-                <h3>Import the file into Trakt</h3>
+                <h3>Connect Trakt</h3>
                 <p>
-                  Open Trakt&apos;s data settings, choose the service and upload
-                  the exported file.
+                  London Screenings needs your permission before it can add a
+                  watchlist or ratings to your Trakt account.
                 </p>
-                <ExternalLink href={TRAKT_IMPORT_URL} className="prominent">
-                  Open Trakt import
-                </ExternalLink>
               </div>
             </div>
 
             <div className="watch-data-step">
               <span className="watch-data-step-number">4</span>
               <div className="watch-data-step-content">
-                <h3>Check and connect</h3>
+                <h3>Import and review</h3>
                 <p>
-                  Check that your ratings and watchlist transferred correctly.
-                  Imports are handled by Trakt.
+                  After connecting, select <strong>Import movies</strong>, upload
+                  the export, resolve uncertain matches, and confirm the changes.
                 </p>
               </div>
             </div>
@@ -434,7 +407,7 @@ export default function WatchDataModal({
             >
               {isConnecting
                 ? "Connecting…"
-                : "I’ve imported my data — Connect Trakt"}
+                : "Connect Trakt to continue"}
             </button>
           </div>
         )}
