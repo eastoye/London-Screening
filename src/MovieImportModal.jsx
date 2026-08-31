@@ -5,7 +5,7 @@ import { parseImportFile } from "./movieImport/fileParser.js";
 import { matchImportRecords } from "./movieImport/matcherApi.js";
 import "./MovieImportModal.css";
 
-const MAX_IMPORT_RECORDS = 3000;
+const MAX_IMPORT_RECORDS = 1000;
 
 function CloseIcon() {
   return (
@@ -200,6 +200,21 @@ export default function MovieImportModal({ isOpen, onClose, onImport }) {
     };
   }, [isOpen, onClose]);
 
+  const sortedRecords = useMemo(() => {
+    const priority = {
+      ambiguous: 0,
+      unmatched: 1,
+      invalid: 2,
+      matched: 3,
+    };
+
+    return [...records].sort(
+      (a, b) =>
+        (priority[a.status] ?? 99) -
+        (priority[b.status] ?? 99)
+    );
+  }, [records]);
+
   const counts = useMemo(() => {
     const values = { matched: 0, ambiguous: 0, unmatched: 0, invalid: 0 };
     for (const record of records) {
@@ -348,7 +363,7 @@ export default function MovieImportModal({ isOpen, onClose, onImport }) {
             )}
 
             <ul className="movie-import-list">
-              {records.map((record) => (
+              {sortedRecords.map((record) => (
                 <ReviewRow key={record.clientId} record={record} onSelectionChange={updateSelection} />
               ))}
             </ul>
