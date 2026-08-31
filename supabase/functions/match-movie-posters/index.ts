@@ -1,40 +1,28 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "npm:@supabase/supabase-js@2.45.4";
+import {
+  createClient,
+  type SupabaseClient,
+} from "npm:@supabase/supabase-js@2.45.4";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers":
+    "Content-Type, Authorization, X-Client-Info, Apikey",
 };
 
-const TMDB_SEARCH_URL = "https://api.themoviedb.org/3/search/movie";
+const TMDB_API_BASE = "https://api.themoviedb.org/3";
+const PAGE_SIZE = 1000;
+const MAX_TITLES_PER_RUN = 100;
 
-// Cinema-specific noise to strip from a screening title before matching.
-// Matches bracketed editions, format tags, and event suffixes.
-const NOISE_PATTERNS: RegExp[] = [
-  /\s*\[([^\]]*)\]/g, // [Director's Cut], [Extended Cut], [35mm], etc.
-  /\s*\((35mm|70mm|4k|4k restoration)\s*\)/gi,
-  /\s*[-–—]\s*(35mm|70mm|4k)\s*$/i,
-  /\b(35mm|70mm|4k)\b/gi,
-  /\b(q\s*&\s*a|q&a|intro|sub|hoh|live score|£1 mem|w\/\s*short|with short|preview|premiere|uk premiere)\b/gi,
-  /\b\s+(with\s+intro|w\/\s*intro|w\/\s*short|w\/\s*q&a)\b/gi,
-];
+type MatchStatus = "matched" | "needs_review" | "unmatched";
+type RunMode = "unlinked" | "retry" | "all";
 
-// Titles that should never be auto-matched (secret/mystery/non-film events).
-const UNMATCHABLE_PATTERNS: RegExp[] = [
-  /\bmystery (movie|film|screening)\b/i,
-  /\bsecret (movie|film|screening|cinema)\b/i,
-  /\b(secret|mystery) (screening|showing)\b/i,
-  /\bmarathon\b/i,
-  /\bdouble bill\b/i,
-  /\btriple bill\b/i,
-  /\ball[- ]?nighter\b/i,
-  /\b(q&a|intro)\s+screening\b/i,
-  /\blive on stage\b/i,
-  /\b(night|evening) of\b/i,
-  /\bpremiere\b/i,
-  /\bpreview\b/i,
-];
+interface ScreeningRow {
+  id: string;
+  movie_title: string;
+  movie_id: string | null;
+}
 
 interface MovieRow {
   id: string;
@@ -45,207 +33,70 @@ interface MovieRow {
   poster_path: string | null;
   match_status: string;
   match_confidence: number | null;
+  manually_confirmed: boolean;
+  poster_override_url: string | null;
+  candidate_tmdb_id: number | null;
+  candidate_poster_path: string | null;
+  match_reason: string | null;
 }
 
-function normaliseTitle(raw: string): { normalised: string; display: string } {
-  let t = raw.trim();
-  // Strip bracketed content first.
-  let display = t.replace(/\s*\[[^\]]*\]/g, "").trim();
-  // Strip trailing parenthesised format tags.
-  display = display.replace(/\s*\((35mm|70mm|4k|4k restoration)\)/gi, "").trim();
-  // Strip trailing " - 35mm" style suffixes.
-  display = display.replace(/\s*[-–—]\s*(35mm|70mm|4k)\s*$/i, "").trim();
-  // Strip format/event words from the display title.
-  display = display
-    .replace(/\b(35mm|70mm|4k)\b/gi, " ")
-    .replace(
-      /\b(q\s*&\s*a|q&a|intro|sub|hoh|live score|£1 mem|w\/\s*short|with short|preview|premiere|uk premiere)\b/gi,
-      " "
-    )
-    .replace(/\b(with\s+intro|w\/\s*intro|w\/\s*short|w\/\s*q&a)\b/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  display = display.replace(/\s*[-–—]\s*$/, "").trim();
-  if (!display) display = t.replace(/\s*\[[^\]]*\]/g, "").trim() || t;
-
-  // Normalised form for dedup: lowercase, strip accents, collapse non-alnum.
-  const normalised = display
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .replace(/\s+/g, " ");
-  return { normalised, display };
+interface CleanedTitle {
+  original: string;
+  queryTitle: string;
+  normalisedTitle: string;
+  identityKey: string;
+  yearHint: number | null;
+  heavilyAltered: boolean;
+  removedLabels: string[];
+  fallbackCategory:
+    | "Mystery Film"
+    | "Double Bill"
+    | "Short Film Programme"
+    | "Live Event"
+    | "General Screening";
+  intentionallyUnmatchable: boolean;
 }
 
-function extractYearFromTitle(raw: string): number | null {
-  // Look for a 4-digit year in brackets or trailing parens, e.g. "Film (1995)".
-  const m = raw.match(/\[(19|20)\d{2}\]|\((19|20)\d{2}\)/);
-  if (m) {
-    const y = parseInt(m[0].replace(/[^\d]/g, ""), 10);
-    if (y >= 1900 && y <= 2100) return y;
-  }
-  return null;
-}
-
-function isUnmatchable(displayTitle: string): boolean {
-  return UNMATCHABLE_PATTERNS.some((re) => re.test(displayTitle));
-}
-
-function levenshtein(a: string, b: string): number {
-  const m = a.length;
-  const n = b.length;
-  if (m === 0) return n;
-  if (n === 0) return m;
-  const prev = new Array(n + 1);
-  const curr = new Array(n + 1);
-  for (let j = 0; j <= n; j++) prev[j] = j;
-  for (let i = 1; i <= m; i++) {
-    curr[0] = i;
-    for (let j = 1; j <= n; j++) {
-      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
-      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
-    }
-    for (let j = 0; j <= n; j++) prev[j] = curr[j];
-  }
-  return prev[n];
-}
-
-function titleSimilarity(a: string, b: string): number {
-  const la = a.toLowerCase();
-  const lb = b.toLowerCase();
-  if (la === lb) return 1;
-  const dist = levenshtein(la, lb);
-  const maxLen = Math.max(la.length, lb.length);
-  return maxLen === 0 ? 1 : 1 - dist / maxLen;
+interface TitleGroup {
+  cleaned: CleanedTitle;
+  screenings: ScreeningRow[];
 }
 
 interface TmdbResult {
   id: number;
-  title: string;
+  title?: string;
   original_title?: string;
   release_date?: string;
   poster_path?: string | null;
-  vote_count?: number;
-  popularity?: number;
-  overview?: string;
+}
+
+interface ScoredCandidate {
+  result: TmdbResult;
+  similarity: number;
+  matchedName: string;
+  releaseYear: number | null;
+  yearExact: boolean;
+  yearCompatible: boolean;
+  score: number;
 }
 
 interface MatchDecision {
-  tmdb_id: number | null;
-  poster_path: string | null;
-  release_year: number | null;
-  match_status: "matched" | "needs_review" | "unmatched";
+  status: MatchStatus;
   confidence: number;
-  reason?: string;
+  tmdbId: number | null;
+  posterPath: string | null;
+  releaseYear: number | null;
+  candidateTmdbId: number | null;
+  candidatePosterPath: string | null;
+  reason: string;
 }
 
-function pickBestMatch(
-  query: string,
-  yearHint: number | null,
-  results: TmdbResult[]
-): MatchDecision {
-  if (!results || results.length === 0) {
-    return {
-      tmdb_id: null,
-      poster_path: null,
-      release_year: null,
-      match_status: "unmatched",
-      confidence: 0,
-      reason: "no TMDB results",
-    };
-  }
-
-  // Score each result.
-  const scored = results.map((r) => {
-    const titleSim = titleSimilarity(query, r.title || r.original_title || "");
-    let yearScore = 0.5;
-    let resultYear: number | null = null;
-    if (r.release_date && /^\d{4}-\d{2}-\d{2}$/.test(r.release_date)) {
-      resultYear = parseInt(r.release_date.slice(0, 4), 10);
-      if (yearHint) {
-        const diff = Math.abs(resultYear - yearHint);
-        yearScore = diff === 0 ? 1 : diff === 1 ? 0.85 : diff <= 2 ? 0.6 : 0.2;
-      } else {
-        yearScore = 0.6; // neutral when we have no year hint
-      }
-    }
-    const popularity = typeof r.popularity === "number" ? r.popularity : 0;
-    const popScore = Math.min(0.1, popularity / 1000);
-    const confidence = titleSim * 0.8 + yearScore * 0.15 + popScore * 0.05;
-    return { r, titleSim, yearScore, resultYear, confidence };
-  });
-
-  scored.sort((a, b) => b.confidence - a.confidence);
-  const best = scored[0];
-
-  // Decision thresholds.
-  const exactTitle = best.titleSim >= 0.98;
-  const strongTitle = best.titleSim >= 0.9;
-
-  if (exactTitle && (yearHint ? best.yearScore >= 0.85 : true)) {
-    return {
-      tmdb_id: best.r.id,
-      poster_path: best.r.poster_path ?? null,
-      release_year: best.resultYear,
-      match_status: "matched",
-      confidence: Math.min(1, best.confidence),
-    };
-  }
-
-  if (strongTitle && (!yearHint || best.yearScore >= 0.6)) {
-    return {
-      tmdb_id: best.r.id,
-      poster_path: best.r.poster_path ?? null,
-      release_year: best.resultYear,
-      match_status: "matched",
-      confidence: Math.min(1, best.confidence),
-    };
-  }
-
-  // A plausible but ambiguous result — keep the candidate but flag for review.
-  if (best.titleSim >= 0.75) {
-    return {
-      tmdb_id: best.r.id,
-      poster_path: best.r.poster_path ?? null,
-      release_year: best.resultYear,
-      match_status: "needs_review",
-      confidence: best.confidence,
-      reason: `best candidate "${best.r.title}" sim=${best.titleSim.toFixed(2)}`,
-    };
-  }
-
-  return {
-    tmdb_id: null,
-    poster_path: null,
-    release_year: null,
-    match_status: "unmatched",
-    confidence: best.confidence,
-    reason: "no confident candidate",
-  };
-}
-
-async function searchTmdb(
-  token: string,
-  query: string,
-  year: number | null
-): Promise<TmdbResult[]> {
-  const params = new URLSearchParams({ query, language: "en-GB", page: "1", include_adult: "false" });
-  if (year) params.set("year", String(year));
-  const url = `${TMDB_SEARCH_URL}?${params.toString()}`;
-  const resp = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/json",
-    },
-  });
-  if (!resp.ok) {
-    const body = await resp.text();
-    throw new Error(`TMDB search failed: HTTP ${resp.status} ${body.slice(0, 200)}`);
-  }
-  const json = await resp.json();
-  return (json.results ?? []) as TmdbResult[];
+interface RunRequest {
+  dry_run?: boolean;
+  mode?: RunMode;
+  max_titles?: number;
+  after?: string;
+  titles?: string[];
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -255,25 +106,807 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+function comparableTitle(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function titleIdentity(queryTitle: string, year: number | null): string {
+  const base = comparableTitle(queryTitle);
+  return year ? `${base} ${year}` : base;
+}
+
+function fallbackCategory(title: string): CleanedTitle["fallbackCategory"] {
+  if (
+    /\b(mystery|secret|surprise)\s+(movie|film|screening|showing)\b/i.test(
+      title,
+    ) ||
+    /\bundisclosed\s+(movie|film|title)\b/i.test(title) ||
+    /^(?:.{2,50}\s*[-:]\s*)?mystery\b.{0,80}\b(?:cinema|matinees?|marathon)\b/i.test(
+      title.trim(),
+    )
+  ) {
+    return "Mystery Film";
+  }
+  if (
+    /\b(double|triple)\s+(bill|feature)\b/i.test(title) ||
+    /\ball[- ]?nighter\b/i.test(title) ||
+    /\b(film|movie|season|series|trilogy|saga|franchise|mystery|horror|anime)\s+marathon\b/i.test(
+      title,
+    ) ||
+    /\bmarathon\s*(?:screening|programme|program|:|-)/i.test(title) ||
+    /-a-thon\b/i.test(title)
+  ) {
+    return "Double Bill";
+  }
+  if (
+    /\b(shorts?|short films?)\s+(programme|program|selection|showcase|collection|night)\b/i.test(
+      title,
+    ) ||
+    /\bprogramme\s+of\s+shorts?\b/i.test(title) ||
+    /^shorts\b/i.test(title.trim())
+  ) {
+    return "Short Film Programme";
+  }
+  if (
+    /^(?:nt live|national theatre live|met opera|royal ballet|royal opera|royal ballet\s*&\s*opera|rbo live|exhibition on screen)\b/i.test(
+      title.trim(),
+    ) ||
+    /\b(event cinema|live broadcast|encore broadcast|in conversation)\b/i.test(
+      title,
+    ) ||
+    /\bseason\s+\d+\s+marathon\b/i.test(title) ||
+    /\bepisodes?\s+\d+(?:\s*[-\u2013\u2014]\s*\d+)?\b/i.test(title)
+  ) {
+    return "Live Event";
+  }
+  return "General Screening";
+}
+
+function cleanScreeningTitle(raw: string): CleanedTitle {
+  const original = raw.trim().replace(/\s+/g, " ");
+  let title = original;
+  let yearHint: number | null = null;
+  let heavilyAltered = false;
+  const removedLabels: string[] = [];
+
+  const replace = (
+    pattern: RegExp,
+    replacement: string,
+    label: string,
+    heavy = false,
+  ) => {
+    const next = title.replace(pattern, replacement).trim();
+    if (next !== title) {
+      title = next;
+      removedLabels.push(label);
+      heavilyAltered ||= heavy;
+      return true;
+    }
+    return false;
+  };
+
+  // Screening-access labels can appear as a prefix.
+  replace(
+    /^(?:(?:hoh|open captioned|captioned|parent\s*(?:and|&)\s*baby|baby cinema|members? screening)\s*[:\-\u2013\u2014]\s*)/i,
+    "",
+    "access/presentation prefix",
+  );
+  replace(
+    /^(?:(?:uk|world|london)\s+(?:theatrical\s+)?(?:preview|premiere)\s*[:\-\u2013\u2014]?\s+)/i,
+    "",
+    "preview/premiere prefix",
+    true,
+  );
+
+  // Curatorial wrappers are useful for discovery, but removing them is a
+  // substantial change and therefore prevents automatic acceptance.
+  replace(
+    /^.{2,70}\b(?:presents?|introduces)\s*[:\-\u2013\u2014]?\s+(?=[A-Z0-9])/i,
+    "",
+    "curatorial presenter prefix",
+    true,
+  );
+
+  replace(
+    /\s*\[[^\]]*[A-Za-z\u00C0-\u00FF][^\]]*\]\s*$/,
+    "",
+    "translated/alternative title",
+  );
+
+  // Remove repeated, clearly delimited screening suffixes.
+  for (let pass = 0; pass < 8; pass += 1) {
+    let changed = false;
+    changed ||= replace(
+      /\s*[\[(]\s*(?:35mm|70mm|4k(?:\s+(?:restoration|remaster))?|imax|hoh|subtitled|open captioned|captioned|parent\s*(?:and|&)\s*baby|members? screening|live score)\s*[\])]\s*$/i,
+      "",
+      "bracketed screening label",
+    );
+    changed ||= replace(
+      /\s*[\[(]\s*(?:(?:uk|world|london)\s+)?(?:theatrical\s+)?(?:preview|premiere)(?:\s+screening)?\s*[\])]\s*$/i,
+      "",
+      "bracketed preview/premiere label",
+    );
+    changed ||= replace(
+      /\s*(?:[+|\u2022]|[-\u2013\u2014]\s+)\s*(?:q\s*&\s*a|qanda|introduction|intro|extended intro|35mm|70mm|4k(?:\s+(?:restoration|remaster))?|imax|hoh|subtitled|open captioned|captioned|parent\s*(?:and|&)\s*baby|members? screening|live score|with\s+(?:a\s+)?short|w\/?\s*short)\b(?:\s+(?:with|featuring|followed by)\s+.{2,100})?\s*$/i,
+      "",
+      "screening suffix",
+    );
+    changed ||= replace(
+      /\s*(?:[+|\u2022]|[-\u2013\u2014]\s+)\s*(?:director|cast|filmmaker|actor|crew|virtual)\s+q\s*&\s*a(?:\s+with\s+.{2,100})?\s*$/i,
+      "",
+      "appearance Q&A suffix",
+    );
+    changed ||= replace(
+      /\s*(?:[+|\u2022]|[-\u2013\u2014]\s+)\s*.{2,100}\s+(?:q\s*&\s*a|in person|live on stage)\s*$/i,
+      "",
+      "named appearance suffix",
+      true,
+    );
+    changed ||= replace(
+      /\s*[\[(]\s*\+?\s*shorts?\s*[\])]\s*$/i,
+      "",
+      "short-film accompaniment",
+    );
+    changed ||= replace(
+      /\s*(?:[+|\u2022]|[-\u2013\u2014]\s+)\s*(?:shorts?|with\s+(?:a\s+)?short|w\/?\s*short)(?:\s*(?:&|and|\+)\s*(?:introduction|intro))?\s*$/i,
+      "",
+      "short-film accompaniment",
+    );
+    changed ||= replace(
+      /\s*(?:[+|\u2022:]|[-\u2013\u2014]\s+)\s*(?:(?:uk|world|london)\s+)?(?:preview|premiere)\s*$/i,
+      "",
+      "preview/premiere suffix",
+    );
+    changed ||= replace(
+      /\s*(?:[+|\u2022:]|[-\u2013\u2014]\s+)\s*(?:(?:uk|world|london)\s+)?(?:preview|premiere)\s+screening\s*$/i,
+      "",
+      "preview/premiere screening suffix",
+    );
+    changed ||= replace(
+      /\s*(?:[+|\u2022:]|[-\u2013\u2014]\s+)\s*(?:(?:uk|world|london)\s+)?premiere\s+of\s+(?:a\s+)?(?:4k\s+)?restoration\s*$/i,
+      "",
+      "restoration premiere suffix",
+    );
+    changed ||= replace(
+      /\s*[-\u2013\u2014]\s+\d{1,3}(?:st|nd|rd|th)\s+anniversary\s*$/i,
+      "",
+      "anniversary suffix",
+    );
+    changed ||= replace(
+      /\s*(?:[+|\u2022]|[-\u2013\u2014:]\s+)\s*(?:director'?s|theatrical|extended|final|anniversary|restored)\s+(?:cut|edition|restoration)\s*$/i,
+      "",
+      "edition suffix",
+    );
+    changed ||= replace(
+      /\s+(?:with|featuring)\s+.{2,100}\s+(?:in person|live on stage|for a q\s*&\s*a|for q\s*&\s*a)\s*$/i,
+      "",
+      "director/cast appearance",
+    );
+    changed ||= replace(
+      /\s+(?:presented|introduced|hosted)\s+by\s+.{2,100}\s*$/i,
+      "",
+      "presenter suffix",
+      true,
+    );
+    changed ||= replace(
+      /\s+(?:q\s*&\s*a|qanda|introduction|intro|35mm|70mm|4k(?:\s+(?:restoration|remaster))?|imax|hoh|subtitled|open captioned|captioned|parent\s*(?:and|&)\s*baby|members? screening|live score)\s*$/i,
+      "",
+      "plain trailing screening label",
+    );
+    changed ||= replace(
+      /\s+(?:(?:uk|world|london)\s+)?(?:preview|premiere)\s*$/i,
+      "",
+      "plain preview/premiere suffix",
+      true,
+    );
+    if (!changed) break;
+  }
+
+  // A terminal bracketed year is identity metadata, not part of the query.
+  const yearMatch = title.match(
+    /\s*(?:\(|\[)\s*((?:18|19|20)\d{2})\s*(?:\)|\])\s*$/,
+  );
+  if (yearMatch) {
+    const parsed = Number(yearMatch[1]);
+    const currentYear = new Date().getUTCFullYear();
+    if (parsed >= 1870 && parsed <= currentYear + 2) {
+      yearHint = parsed;
+      title = title.slice(0, yearMatch.index).trim();
+      removedLabels.push("release year");
+    }
+  }
+
+  title = title
+    .replace(/\s*[|\u2022]\s*$/, "")
+    .replace(/\s*[-\u2013\u2014:]\s*$/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!title) title = original;
+
+  const category = fallbackCategory(original);
+  const intentionallyUnmatchable = category !== "General Screening";
+  const normalisedTitle = comparableTitle(title);
+
+  return {
+    original,
+    queryTitle: title,
+    normalisedTitle,
+    identityKey: titleIdentity(title, yearHint),
+    yearHint,
+    heavilyAltered,
+    removedLabels,
+    fallbackCategory: category,
+    intentionallyUnmatchable,
+  };
+}
+
+function levenshtein(a: string, b: string): number {
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  const current = new Array<number>(b.length + 1);
+  for (let i = 1; i <= a.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + cost,
+      );
+    }
+    for (let j = 0; j <= b.length; j += 1) previous[j] = current[j];
+  }
+  return previous[b.length];
+}
+
+function titleSimilarity(a: string, b: string): number {
+  const left = comparableTitle(a);
+  const right = comparableTitle(b);
+  if (left === right) return 1;
+  const maxLength = Math.max(left.length, right.length);
+  return maxLength ? 1 - levenshtein(left, right) / maxLength : 1;
+}
+
+function releaseYear(result: TmdbResult): number | null {
+  if (!result.release_date || !/^\d{4}-\d{2}-\d{2}$/.test(result.release_date)) {
+    return null;
+  }
+  return Number(result.release_date.slice(0, 4));
+}
+
+async function tmdbGet(token: string, path: string): Promise<unknown> {
+  const response = await fetch(`${TMDB_API_BASE}${path}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`TMDB HTTP ${response.status}: ${body.slice(0, 180)}`);
+  }
+  return await response.json();
+}
+
+async function searchTmdb(
+  token: string,
+  query: string,
+  yearHint: number | null,
+): Promise<TmdbResult[]> {
+  const params = new URLSearchParams({
+    query,
+    include_adult: "false",
+    language: "en-GB",
+    page: "1",
+  });
+  if (yearHint) params.set("primary_release_year", String(yearHint));
+  const payload = (await tmdbGet(
+    token,
+    `/search/movie?${params.toString()}`,
+  )) as { results?: TmdbResult[] };
+  return payload.results ?? [];
+}
+
+async function alternativeTitles(
+  token: string,
+  movieId: number,
+): Promise<string[]> {
+  try {
+    const payload = (await tmdbGet(
+      token,
+      `/movie/${movieId}/alternative_titles`,
+    )) as { titles?: Array<{ title?: string }> };
+    return (payload.titles ?? [])
+      .map((item) => item.title?.trim() ?? "")
+      .filter(Boolean);
+  } catch (error) {
+    console.warn(
+      `[match-movie-posters] alternative titles unavailable for ${movieId}:`,
+      error,
+    );
+    return [];
+  }
+}
+
+function scoreCandidates(
+  query: string,
+  yearHint: number | null,
+  results: TmdbResult[],
+  alternatives: Map<number, string[]>,
+): ScoredCandidate[] {
+  return results
+    .map((result) => {
+      const names = [
+        result.title ?? "",
+        result.original_title ?? "",
+        ...(alternatives.get(result.id) ?? []),
+      ].filter(Boolean);
+      let similarity = 0;
+      let matchedName = result.title ?? result.original_title ?? "";
+      for (const name of names) {
+        const candidateSimilarity = titleSimilarity(query, name);
+        if (candidateSimilarity > similarity) {
+          similarity = candidateSimilarity;
+          matchedName = name;
+        }
+      }
+      const candidateYear = releaseYear(result);
+      const yearExact = Boolean(yearHint && candidateYear === yearHint);
+      const yearCompatible = Boolean(
+        yearHint &&
+          candidateYear &&
+          Math.abs(candidateYear - yearHint) <= 1,
+      );
+      const yearScore = yearHint
+        ? yearExact
+          ? 0.25
+          : yearCompatible
+            ? 0.2
+            : 0
+        : 0.1;
+      const posterScore = result.poster_path ? 0.01 : 0;
+      return {
+        result,
+        similarity,
+        matchedName,
+        releaseYear: candidateYear,
+        yearExact,
+        yearCompatible,
+        score: similarity * 0.75 + yearScore + posterScore,
+      };
+    })
+    .sort((a, b) => b.score - a.score || b.similarity - a.similarity);
+}
+
+function reviewDecision(best: ScoredCandidate, reason: string): MatchDecision {
+  return {
+    status: "needs_review",
+    confidence: Math.round(best.score * 1000) / 1000,
+    tmdbId: null,
+    posterPath: null,
+    releaseYear: best.releaseYear,
+    candidateTmdbId: best.result.id,
+    candidatePosterPath: best.result.poster_path ?? null,
+    reason,
+  };
+}
+
+async function decideMatch(
+  token: string,
+  cleaned: CleanedTitle,
+): Promise<MatchDecision> {
+  if (cleaned.intentionallyUnmatchable) {
+    return {
+      status: "unmatched",
+      confidence: 0,
+      tmdbId: null,
+      posterPath: null,
+      releaseYear: cleaned.yearHint,
+      candidateTmdbId: null,
+      candidatePosterPath: null,
+      reason: `intentional fallback: ${cleaned.fallbackCategory}`,
+    };
+  }
+
+  const results = await searchTmdb(token, cleaned.queryTitle, cleaned.yearHint);
+  if (!results.length) {
+    return {
+      status: "unmatched",
+      confidence: 0,
+      tmdbId: null,
+      posterPath: null,
+      releaseYear: cleaned.yearHint,
+      candidateTmdbId: null,
+      candidatePosterPath: null,
+      reason: "no TMDB movie results",
+    };
+  }
+
+  let scored = scoreCandidates(
+    cleaned.queryTitle,
+    cleaned.yearHint,
+    results,
+    new Map(),
+  );
+
+  // TMDB search already considers alternative titles, but the result payload
+  // does not expose which title matched. Fetch alternatives only for the most
+  // plausible candidates when the visible/original titles are not conclusive.
+  if (scored[0].similarity < 1 || scored.filter((item) => item.similarity === 1).length > 1) {
+    const alternatives = new Map<number, string[]>();
+    for (const candidate of scored.slice(0, 3)) {
+      alternatives.set(
+        candidate.result.id,
+        await alternativeTitles(token, candidate.result.id),
+      );
+    }
+    scored = scoreCandidates(
+      cleaned.queryTitle,
+      cleaned.yearHint,
+      results,
+      alternatives,
+    );
+  }
+
+  const best = scored[0];
+  const second = scored[1];
+  const margin = second ? best.score - second.score : 1;
+  const exactCandidates = scored.filter((candidate) => candidate.similarity >= 0.995);
+
+  if (cleaned.yearHint) {
+    if (best.similarity >= 0.995 && best.yearCompatible) {
+      if (!best.result.poster_path) {
+        return reviewDecision(best, "exact title/year candidate has no poster");
+      }
+      if (cleaned.heavilyAltered) {
+        return reviewDecision(best, "title required substantial cleaning");
+      }
+      return {
+        status: "matched",
+        confidence: 1,
+        tmdbId: best.result.id,
+        posterPath: best.result.poster_path,
+        releaseYear: best.yearExact ? best.releaseYear : cleaned.yearHint,
+        candidateTmdbId: null,
+        candidatePosterPath: null,
+        reason: best.yearExact
+          ? `exact title and release year via "${best.matchedName}"`
+          : `exact title; TMDB date differs by one year from explicit screening year`,
+      };
+    }
+    if (
+      best.similarity >= 0.96 &&
+      best.yearExact &&
+      margin >= 0.06 &&
+      best.result.poster_path
+    ) {
+      if (cleaned.heavilyAltered) {
+        return reviewDecision(best, "title required substantial cleaning");
+      }
+      return {
+        status: "matched",
+        confidence: 0.96,
+        tmdbId: best.result.id,
+        posterPath: best.result.poster_path,
+        releaseYear: best.releaseYear,
+        candidateTmdbId: null,
+        candidatePosterPath: null,
+        reason: `strong title and exact release year via "${best.matchedName}"`,
+      };
+    }
+    if (best.similarity >= 0.72) {
+      const reason = !best.yearExact
+        ? `candidate year ${best.releaseYear ?? "unknown"} conflicts with ${cleaned.yearHint}`
+        : margin < 0.06
+          ? "top candidates are too similar"
+          : "title similarity is below the automatic threshold";
+      return reviewDecision(best, reason);
+    }
+  } else {
+    if (exactCandidates.length > 1) {
+      return reviewDecision(
+        best,
+        `ambiguous exact title across ${exactCandidates.length} TMDB movies; release year required`,
+      );
+    }
+    if (best.similarity >= 0.995) {
+      if (!best.result.poster_path) {
+        return reviewDecision(best, "exact title candidate has no poster");
+      }
+      if (cleaned.heavilyAltered) {
+        return reviewDecision(best, "title required substantial cleaning");
+      }
+      return {
+        status: "matched",
+        confidence: 0.95,
+        tmdbId: best.result.id,
+        posterPath: best.result.poster_path,
+        releaseYear: best.releaseYear,
+        candidateTmdbId: null,
+        candidatePosterPath: null,
+        reason: `unique exact title via "${best.matchedName}"`,
+      };
+    }
+    if (
+      best.similarity >= 0.97 &&
+      margin >= 0.1 &&
+      best.result.poster_path &&
+      !cleaned.heavilyAltered
+    ) {
+      return {
+        status: "matched",
+        confidence: 0.92,
+        tmdbId: best.result.id,
+        posterPath: best.result.poster_path,
+        releaseYear: best.releaseYear,
+        candidateTmdbId: null,
+        candidatePosterPath: null,
+        reason: `single strong title candidate via "${best.matchedName}"`,
+      };
+    }
+    if (best.similarity >= 0.72) {
+      const reason = !best.result.poster_path
+        ? "best candidate has no poster"
+        : margin < 0.1
+          ? "top candidates are too similar"
+          : cleaned.heavilyAltered
+            ? "title required substantial cleaning"
+            : "title similarity is below the automatic threshold";
+      return reviewDecision(best, reason);
+    }
+  }
+
+  return {
+    status: "unmatched",
+    confidence: Math.round(best.score * 1000) / 1000,
+    tmdbId: null,
+    posterPath: null,
+    releaseYear: cleaned.yearHint,
+    candidateTmdbId: null,
+    candidatePosterPath: null,
+    reason: "no sufficiently similar TMDB movie candidate",
+  };
+}
+
+async function fetchAllFutureScreenings(
+  supabase: SupabaseClient,
+): Promise<ScreeningRow[]> {
+  const rows: ScreeningRow[] = [];
+  const nowIso = new Date().toISOString();
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from("screenings")
+      .select("id, movie_title, movie_id")
+      .eq("active", true)
+      .gt("start_time", nowIso)
+      .order("id", { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) throw new Error(`screenings query failed: ${error.message}`);
+    const page = (data ?? []) as ScreeningRow[];
+    rows.push(...page);
+    if (page.length < PAGE_SIZE) break;
+  }
+  return rows;
+}
+
+async function fetchAllMovies(
+  supabase: SupabaseClient,
+): Promise<MovieRow[]> {
+  const rows: MovieRow[] = [];
+  for (let from = 0; ; from += PAGE_SIZE) {
+    const { data, error } = await supabase
+      .from("movies")
+      .select(
+        "id, normalised_title, display_title, release_year, tmdb_id, poster_path, match_status, match_confidence, manually_confirmed, poster_override_url, candidate_tmdb_id, candidate_poster_path, match_reason",
+      )
+      .order("id", { ascending: true })
+      .range(from, from + PAGE_SIZE - 1);
+    if (error) throw new Error(`movies query failed: ${error.message}`);
+    const page = (data ?? []) as MovieRow[];
+    rows.push(...page);
+    if (page.length < PAGE_SIZE) break;
+  }
+  return rows;
+}
+
+async function linkScreenings(
+  supabase: SupabaseClient,
+  screeningIds: string[],
+  movieId: string,
+): Promise<void> {
+  for (let index = 0; index < screeningIds.length; index += 100) {
+    const chunk = screeningIds.slice(index, index + 100);
+    const { error } = await supabase
+      .from("screenings")
+      .update({ movie_id: movieId })
+      .in("id", chunk);
+    if (error) throw new Error(`screening link failed: ${error.message}`);
+  }
+}
+
+function retryable(movie: MovieRow | undefined): boolean {
+  if (!movie) return true;
+  if (movie.manually_confirmed) return false;
+  return (
+    movie.match_status !== "matched" ||
+    !movie.tmdb_id ||
+    !movie.poster_path
+  );
+}
+
+function groupScreenings(screenings: ScreeningRow[]): TitleGroup[] {
+  const groups = new Map<string, TitleGroup>();
+  for (const screening of screenings) {
+    const cleaned = cleanScreeningTitle(screening.movie_title);
+    if (!cleaned.identityKey) continue;
+    const existing = groups.get(cleaned.identityKey);
+    if (existing) existing.screenings.push(screening);
+    else groups.set(cleaned.identityKey, { cleaned, screenings: [screening] });
+  }
+  return [...groups.values()].sort((a, b) =>
+    a.cleaned.identityKey.localeCompare(b.cleaned.identityKey),
+  );
+}
+
+function findManualMovie(
+  group: TitleGroup,
+  moviesById: Map<string, MovieRow>,
+  moviesByNormalised: Map<string, MovieRow>,
+): MovieRow | null {
+  const byIdentity = moviesByNormalised.get(group.cleaned.identityKey);
+  if (byIdentity?.manually_confirmed) return byIdentity;
+  for (const screening of group.screenings) {
+    const linked = screening.movie_id
+      ? moviesById.get(screening.movie_id)
+      : undefined;
+    if (linked?.manually_confirmed) return linked;
+  }
+  return null;
+}
+
+async function persistDecision(
+  supabase: SupabaseClient,
+  group: TitleGroup,
+  decision: MatchDecision,
+  moviesById: Map<string, MovieRow>,
+  moviesByNormalised: Map<string, MovieRow>,
+  moviesByTmdb: Map<number, MovieRow>,
+  movieUsageKeys: Map<string, Set<string>>,
+): Promise<{ movieId: string; action: "inserted" | "updated" | "reused_tmdb" }> {
+  const linkedRows = group.screenings
+    .map((screening) =>
+      screening.movie_id ? moviesById.get(screening.movie_id) : undefined,
+    )
+    .filter((movie): movie is MovieRow => Boolean(movie));
+
+  let target: MovieRow | undefined;
+  let action: "inserted" | "updated" | "reused_tmdb" = "updated";
+
+  if (decision.tmdbId) {
+    target = moviesByTmdb.get(decision.tmdbId);
+    if (target) action = "reused_tmdb";
+  }
+  target ??= moviesByNormalised.get(group.cleaned.identityKey);
+  target ??= linkedRows.find(
+    (movie) => (movieUsageKeys.get(movie.id)?.size ?? 0) <= 1,
+  );
+
+  const now = new Date().toISOString();
+  const values = {
+    display_title: group.cleaned.queryTitle,
+    release_year: decision.releaseYear ?? group.cleaned.yearHint,
+    tmdb_id: decision.tmdbId,
+    poster_path: decision.posterPath,
+    match_status: decision.status,
+    match_confidence: decision.confidence,
+    candidate_tmdb_id: decision.candidateTmdbId,
+    candidate_poster_path: decision.candidatePosterPath,
+    match_reason: decision.reason,
+    updated_at: now,
+  };
+
+  if (target) {
+    if (target.manually_confirmed) {
+      await linkScreenings(
+        supabase,
+        group.screenings.map((screening) => screening.id),
+        target.id,
+      );
+      return { movieId: target.id, action: "reused_tmdb" };
+    }
+    const isTmdbCanonical =
+      decision.tmdbId !== null && target.tmdb_id === decision.tmdbId;
+    const updateValues = isTmdbCanonical
+      ? values
+      : { ...values, normalised_title: group.cleaned.identityKey };
+    const { data, error } = await supabase
+      .from("movies")
+      .update(updateValues)
+      .eq("id", target.id)
+      .select(
+        "id, normalised_title, display_title, release_year, tmdb_id, poster_path, match_status, match_confidence, manually_confirmed, poster_override_url, candidate_tmdb_id, candidate_poster_path, match_reason",
+      )
+      .single();
+    if (error || !data) {
+      throw new Error(`movie update failed: ${error?.message ?? "no row returned"}`);
+    }
+    target = data as MovieRow;
+  } else {
+    const { data, error } = await supabase
+      .from("movies")
+      .insert({
+        ...values,
+        normalised_title: group.cleaned.identityKey,
+      })
+      .select(
+        "id, normalised_title, display_title, release_year, tmdb_id, poster_path, match_status, match_confidence, manually_confirmed, poster_override_url, candidate_tmdb_id, candidate_poster_path, match_reason",
+      )
+      .single();
+    if (error || !data) {
+      throw new Error(`movie insert failed: ${error?.message ?? "no row returned"}`);
+    }
+    target = data as MovieRow;
+    action = "inserted";
+  }
+
+  moviesById.set(target.id, target);
+  moviesByNormalised.set(target.normalised_title, target);
+  if (target.tmdb_id) moviesByTmdb.set(target.tmdb_id, target);
+
+  await linkScreenings(
+    supabase,
+    group.screenings.map((screening) => screening.id),
+    target.id,
+  );
+  return { movieId: target.id, action };
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
-    return new Response(null, { status: 200, headers: corsHeaders });
+    return new Response(null, { status: 204, headers: corsHeaders });
+  }
+  if (req.method !== "POST") {
+    return jsonResponse({ success: false, error: "Use POST." }, 405);
   }
 
   const runStartedAt = new Date().toISOString();
-  console.log(`[match-movie-posters] starting at ${runStartedAt}`);
+  let body: RunRequest = {};
+  try {
+    body = (await req.json()) as RunRequest;
+  } catch {
+    body = {};
+  }
+
+  const dryRun = body.dry_run === true;
+  const mode: RunMode = ["unlinked", "retry", "all"].includes(body.mode ?? "")
+    ? (body.mode as RunMode)
+    : "retry";
+  const maxTitles = Math.max(
+    1,
+    Math.min(MAX_TITLES_PER_RUN, Math.floor(body.max_titles ?? 50)),
+  );
+  const after = typeof body.after === "string" ? body.after : "";
+  const requestedTitles = new Set(
+    Array.isArray(body.titles)
+      ? body.titles
+          .filter((title): title is string => typeof title === "string")
+          .map((title) => comparableTitle(title))
+      : [],
+  );
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   const tmdbToken = Deno.env.get("TMDB_READ_ACCESS_TOKEN");
-
-  if (!supabaseUrl || !serviceRoleKey) {
-    return jsonResponse({ success: false, error: "Missing Supabase credentials." }, 500);
-  }
-  if (!tmdbToken) {
+  if (!supabaseUrl || !serviceRoleKey || !tmdbToken) {
     return jsonResponse(
-      { success: false, error: "Missing TMDB_READ_ACCESS_TOKEN secret." },
-      500
+      { success: false, error: "Required function secrets are missing." },
+      500,
     );
   }
 
@@ -281,242 +914,174 @@ Deno.serve(async (req: Request) => {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  // 1. Find screenings without a linked movie.
-  const { data: unmatchedScreenings, error: selErr } = await supabase
-    .from("screenings")
-    .select("id, movie_title")
-    .is("movie_id", null)
-    .order("movie_title", { ascending: true });
+  try {
+    const [screenings, movies] = await Promise.all([
+      fetchAllFutureScreenings(supabase),
+      fetchAllMovies(supabase),
+    ]);
+    const moviesById = new Map(movies.map((movie) => [movie.id, movie]));
+    const moviesByNormalised = new Map(
+      movies.map((movie) => [movie.normalised_title, movie]),
+    );
+    const moviesByTmdb = new Map(
+      movies
+        .filter((movie) => movie.tmdb_id !== null)
+        .map((movie) => [movie.tmdb_id as number, movie]),
+    );
 
-  if (selErr) {
-    console.error("[match-movie-posters] select screenings error:", selErr);
-    return jsonResponse({ success: false, error: selErr.message }, 500);
-  }
-
-  // Group by normalised title so we search TMDB once per unique title.
-  const byNormalised = new Map<
-    string,
-    { normalised: string; display: string; raw: string; screeningIds: string[] }
-  >();
-
-  for (const s of unmatchedScreenings ?? []) {
-    const raw = s.movie_title as string;
-    const { normalised, display } = normaliseTitle(raw);
-    if (!normalised) continue;
-    const existing = byNormalised.get(normalised);
-    if (existing) {
-      existing.screeningIds.push(s.id);
-    } else {
-      byNormalised.set(normalised, {
-        normalised,
-        display,
-        raw,
-        screeningIds: [s.id],
-      });
-    }
-  }
-
-  const uniqueTitles = Array.from(byNormalised.values());
-  console.log(
-    `[match-movie-posters] ${unmatchedScreenings?.length ?? 0} screenings → ${uniqueTitles.length} unique titles`
-  );
-
-  const stats = {
-    matched: 0,
-    needs_review: 0,
-    unmatched: 0,
-    reused: 0,
-  };
-  const examples: Array<{
-    raw_title: string;
-    normalised_title: string;
-    display_title: string;
-    match_status: string;
-    tmdb_id: number | null;
-    poster_path: string | null;
-    confidence: number;
-    screenings_linked: number;
-    reason?: string;
-  }> = [];
-
-  for (const entry of uniqueTitles) {
-    const { normalised, display, raw, screeningIds } = entry;
-
-    // 3. Reuse an existing movies row by normalised_title.
-    const { data: existingMovie, error: existErr } = await supabase
-      .from("movies")
-      .select("id, normalised_title, display_title, match_status, tmdb_id, poster_path, match_confidence")
-      .eq("normalised_title", normalised)
-      .maybeSingle();
-
-    if (existErr) {
-      console.error("[match-movie-posters] lookup existing error:", existErr);
-      continue;
-    }
-
-    let movieId: string | null = null;
-
-    if (existingMovie) {
-      // Reuse — link screenings and continue.
-      movieId = existingMovie.id as string;
-      stats.reused += 1;
-      if (existingMovie.match_status === "matched") stats.matched += 1;
-      else if (existingMovie.match_status === "needs_review") stats.needs_review += 1;
-      else if (existingMovie.match_status === "unmatched") stats.unmatched += 1;
-
-      const { error: linkErr } = await supabase
-        .from("screenings")
-        .update({ movie_id: movieId })
-        .in("id", screeningIds);
-      if (linkErr) {
-        console.error("[match-movie-posters] reuse link error:", linkErr);
+    const allGroups = groupScreenings(screenings);
+    const movieUsageKeys = new Map<string, Set<string>>();
+    for (const group of allGroups) {
+      for (const screening of group.screenings) {
+        if (!screening.movie_id) continue;
+        const keys = movieUsageKeys.get(screening.movie_id) ?? new Set<string>();
+        keys.add(group.cleaned.identityKey);
+        movieUsageKeys.set(screening.movie_id, keys);
       }
-      continue;
     }
 
-    // 10. Mark mystery/secret/marathon/non-film events as unmatched without searching.
-    if (isUnmatchable(display)) {
-      const { data: inserted, error: insErr } = await supabase
-        .from("movies")
-        .insert({
-          normalised_title: normalised,
-          display_title: display,
-          match_status: "unmatched",
-          match_confidence: 0,
-        })
-        .select("id")
-        .single();
-      if (insErr || !inserted) {
-        console.error("[match-movie-posters] insert unmatched error:", insErr);
-        continue;
+    const eligible = allGroups.filter((group) => {
+      if (group.cleaned.identityKey <= after) return false;
+      if (
+        requestedTitles.size > 0 &&
+        !group.screenings.some((screening) =>
+          requestedTitles.has(comparableTitle(screening.movie_title)),
+        )
+      ) {
+        return false;
       }
-      movieId = inserted.id as string;
-      stats.unmatched += 1;
-      examples.push({
-        raw_title: raw,
-        normalised_title: normalised,
-        display_title: display,
-        match_status: "unmatched",
-        tmdb_id: null,
-        poster_path: null,
-        confidence: 0,
-        screenings_linked: screeningIds.length,
-        reason: "unmatchable title pattern",
-      });
-      const { error: linkErr } = await supabase
-        .from("screenings")
-        .update({ movie_id: movieId })
-        .in("id", screeningIds);
-      if (linkErr) console.error("[match-movie-posters] link unmatched error:", linkErr);
-      continue;
-    }
-
-    // 4-7. Search TMDB.
-    const yearHint = extractYearFromTitle(raw);
-    let decision: MatchDecision;
-    try {
-      const results = await searchTmdb(tmdbToken, display, yearHint);
-      decision = pickBestMatch(display, yearHint, results);
-    } catch (err) {
-      console.error(`[match-movie-posters] TMDB error for "${display}":`, err);
-      // Treat as needs_review rather than unmatched so it can be retried.
-      const { data: inserted, error: insErr } = await supabase
-        .from("movies")
-        .insert({
-          normalised_title: normalised,
-          display_title: display,
-          match_status: "needs_review",
-          match_confidence: 0,
-        })
-        .select("id")
-        .single();
-      if (insErr || !inserted) {
-        console.error("[match-movie-posters] insert tmdb-error error:", insErr);
-        continue;
+      if (requestedTitles.size > 0 || mode === "all") return true;
+      if (mode === "unlinked") {
+        return group.screenings.some((screening) => !screening.movie_id);
       }
-      movieId = inserted.id as string;
-      stats.needs_review += 1;
-      examples.push({
-        raw_title: raw,
-        normalised_title: normalised,
-        display_title: display,
-        match_status: "needs_review",
-        tmdb_id: null,
-        poster_path: null,
-        confidence: 0,
-        screenings_linked: screeningIds.length,
-        reason: `TMDB error: ${err instanceof Error ? err.message : String(err)}`,
-      });
-      const { error: linkErr } = await supabase
-        .from("screenings")
-        .update({ movie_id: movieId })
-        .in("id", screeningIds);
-      if (linkErr) console.error("[match-movie-posters] link tmdb-error error:", linkErr);
-      continue;
-    }
-
-    // 11. Save the TMDB id + poster_path.
-    const { data: inserted, error: insErr } = await supabase
-      .from("movies")
-      .insert({
-        normalised_title: normalised,
-        display_title: display,
-        release_year: decision.release_year,
-        tmdb_id: decision.tmdb_id,
-        poster_path: decision.poster_path,
-        match_status: decision.match_status,
-        match_confidence: Math.round(decision.confidence * 1000) / 1000,
-      })
-      .select("id")
-      .single();
-    if (insErr || !inserted) {
-      console.error("[match-movie-posters] insert movie error:", insErr);
-      continue;
-    }
-    movieId = inserted.id as string;
-
-    if (decision.match_status === "matched") stats.matched += 1;
-    else if (decision.match_status === "needs_review") stats.needs_review += 1;
-    else stats.unmatched += 1;
-
-    examples.push({
-      raw_title: raw,
-      normalised_title: normalised,
-      display_title: display,
-      match_status: decision.match_status,
-      tmdb_id: decision.tmdb_id,
-      poster_path: decision.poster_path,
-      confidence: Math.round(decision.confidence * 1000) / 1000,
-      screenings_linked: screeningIds.length,
-      reason: decision.reason,
+      return group.screenings.some((screening) =>
+        screening.movie_id
+          ? retryable(moviesById.get(screening.movie_id))
+          : true,
+      );
     });
 
-    // 12. Link all matching screenings.
-    const { error: linkErr } = await supabase
-      .from("screenings")
-      .update({ movie_id: movieId })
-      .in("id", screeningIds);
-    if (linkErr) {
-      console.error("[match-movie-posters] link error:", linkErr);
+    const batch = eligible.slice(0, maxTitles);
+    const hasMore = eligible.length > batch.length;
+    const results: Array<Record<string, unknown>> = [];
+    const stats = {
+      matched: 0,
+      needs_review: 0,
+      unmatched: 0,
+      manual_preserved: 0,
+      inserted: 0,
+      updated: 0,
+      reused_tmdb: 0,
+      errors: 0,
+      screenings_linked: 0,
+    };
+
+    for (const group of batch) {
+      const manualMovie = findManualMovie(
+        group,
+        moviesById,
+        moviesByNormalised,
+      );
+      if (manualMovie) {
+        if (!dryRun) {
+          await linkScreenings(
+            supabase,
+            group.screenings.map((screening) => screening.id),
+            manualMovie.id,
+          );
+          stats.screenings_linked += group.screenings.length;
+        }
+        stats.manual_preserved += 1;
+        results.push({
+          public_titles: [...new Set(group.screenings.map((s) => s.movie_title))],
+          query_title: group.cleaned.queryTitle,
+          year_hint: group.cleaned.yearHint,
+          status: "manual_preserved",
+          movie_id: manualMovie.id,
+          tmdb_id: manualMovie.tmdb_id,
+          reason: "manually confirmed row preserved without TMDB search",
+        });
+        continue;
+      }
+
+      try {
+        const decision = await decideMatch(tmdbToken, group.cleaned);
+        stats[decision.status] += 1;
+        let persistence: Record<string, unknown> = { action: "dry_run" };
+        if (!dryRun) {
+          const saved = await persistDecision(
+            supabase,
+            group,
+            decision,
+            moviesById,
+            moviesByNormalised,
+            moviesByTmdb,
+            movieUsageKeys,
+          );
+          stats[saved.action] += 1;
+          stats.screenings_linked += group.screenings.length;
+          persistence = { action: saved.action, movie_id: saved.movieId };
+        }
+        results.push({
+          public_titles: [...new Set(group.screenings.map((s) => s.movie_title))],
+          cinemas_screenings: group.screenings.length,
+          query_title: group.cleaned.queryTitle,
+          normalised_title: group.cleaned.identityKey,
+          year_hint: group.cleaned.yearHint,
+          removed_labels: group.cleaned.removedLabels,
+          heavily_altered: group.cleaned.heavilyAltered,
+          fallback_category: group.cleaned.fallbackCategory,
+          status: decision.status,
+          confidence: decision.confidence,
+          tmdb_id: decision.tmdbId,
+          poster_path: decision.posterPath,
+          candidate_tmdb_id: decision.candidateTmdbId,
+          candidate_poster_path: decision.candidatePosterPath,
+          release_year: decision.releaseYear,
+          reason: decision.reason,
+          ...persistence,
+        });
+      } catch (error) {
+        stats.errors += 1;
+        results.push({
+          public_titles: [...new Set(group.screenings.map((s) => s.movie_title))],
+          query_title: group.cleaned.queryTitle,
+          status: "error",
+          reason: error instanceof Error ? error.message : String(error),
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 40));
     }
 
-    // Be gentle with the TMDB API.
-    await new Promise((r) => setTimeout(r, 60));
+    const lastKey = batch.at(-1)?.cleaned.identityKey ?? null;
+    console.log(
+      `[match-movie-posters] ${dryRun ? "dry-run" : "write"} mode=${mode} ` +
+        `processed=${batch.length} stats=${JSON.stringify(stats)}`,
+    );
+    return jsonResponse({
+      success: stats.errors === 0,
+      dry_run: dryRun,
+      mode,
+      run_started_at: runStartedAt,
+      run_completed_at: new Date().toISOString(),
+      active_future_screenings: screenings.length,
+      active_future_unique_titles: allGroups.length,
+      eligible_unique_titles: eligible.length,
+      processed_unique_titles: batch.length,
+      next_cursor: hasMore ? lastKey : null,
+      stats,
+      results,
+    });
+  } catch (error) {
+    console.error("[match-movie-posters] fatal error:", error);
+    return jsonResponse(
+      {
+        success: false,
+        dry_run: dryRun,
+        mode,
+        error: error instanceof Error ? error.message : String(error),
+      },
+      500,
+    );
   }
-
-  const runCompletedAt = new Date().toISOString();
-  console.log(`[match-movie-posters] done: ${JSON.stringify(stats)}`);
-
-  return jsonResponse({
-    success: true,
-    run_started_at: runStartedAt,
-    run_completed_at: runCompletedAt,
-    unique_titles: uniqueTitles.length,
-    screenings_without_movie: unmatchedScreenings?.length ?? 0,
-    matched: stats.matched,
-    needs_review: stats.needs_review,
-    unmatched: stats.unmatched,
-    reused_existing: stats.reused,
-    examples,
-  });
 });
