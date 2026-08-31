@@ -1,2 +1,5 @@
 [functions.tmdb-search-helper]
 verify_jwt = false
+
+[functions.match-import-movies]
+verify_jwt = false
