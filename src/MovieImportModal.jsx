@@ -5,7 +5,7 @@ import { parseImportFile } from "./movieImport/fileParser.js";
 import { matchImportRecords } from "./movieImport/matcherApi.js";
 import "./MovieImportModal.css";
 
-const MAX_IMPORT_RECORDS = 1000;
+const MAX_IMPORT_RECORDS = 3000;
 
 function CloseIcon() {
   return (
