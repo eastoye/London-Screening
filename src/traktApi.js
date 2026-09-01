@@ -559,11 +559,9 @@ export async function syncTraktImport(token, records, existingData = {}) {
       tmdbId: Number(record.selectedTmdbId),
       rating: record.rating,
     }));
-  const watchedAt = new Date().toISOString();
-
+  // Omit watched_at so Trakt records the watch using its current server time.
   const historyItems = requestedRatingItems.map((item) => ({
     tmdbId: item.tmdbId,
-    watchedAt,
   }));
   const unchangedRatings = requestedRatingItems.filter(
     (item) => existingRatings.get(item.tmdbId) === item.rating
