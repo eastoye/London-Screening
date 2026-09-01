@@ -134,6 +134,7 @@ export default function MovieImportModal({ isOpen, onClose, onImport }) {
   const [text, setText] = useState("");
   const [file, setFile] = useState(null);
   const [records, setRecords] = useState([]);
+  const [activeReviewCategory, setActiveReviewCategory] = useState(null);
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
 
@@ -156,6 +157,7 @@ export default function MovieImportModal({ isOpen, onClose, onImport }) {
     setText("");
     setFile(null);
     setRecords([]);
+    setActiveReviewCategory(null);
     setResult(null);
     setError("");
 
@@ -200,7 +202,7 @@ export default function MovieImportModal({ isOpen, onClose, onImport }) {
     };
   }, [isOpen, onClose]);
 
-  const sortedRecords = useMemo(() => {
+  const defaultSortedRecords = useMemo(() => {
     const priority = {
       ambiguous: 0,
       unmatched: 1,
@@ -214,6 +216,17 @@ export default function MovieImportModal({ isOpen, onClose, onImport }) {
         (priority[b.status] ?? 99)
     );
   }, [records]);
+
+  const sortedRecords = useMemo(() => {
+    if (!activeReviewCategory) return defaultSortedRecords;
+
+    const selected = [];
+    const remaining = [];
+    for (const record of defaultSortedRecords) {
+      (record.status === activeReviewCategory ? selected : remaining).push(record);
+    }
+    return [...selected, ...remaining];
+  }, [activeReviewCategory, defaultSortedRecords]);
 
   const counts = useMemo(() => {
     const values = { matched: 0, ambiguous: 0, unmatched: 0, invalid: 0 };
@@ -236,6 +249,7 @@ export default function MovieImportModal({ isOpen, onClose, onImport }) {
 
   const processInput = async () => {
     setError("");
+    setActiveReviewCategory(null);
     setPhase("matching");
 
     try {
@@ -262,6 +276,11 @@ export default function MovieImportModal({ isOpen, onClose, onImport }) {
         record.clientId === clientId ? { ...record, selectedTmdbId } : record
       )
     );
+  };
+
+  const toggleReviewCategory = (category) => {
+    if (!counts[category]) return;
+    setActiveReviewCategory((current) => (current === category ? null : category));
   };
 
   const writeToTrakt = async () => {
@@ -350,10 +369,25 @@ export default function MovieImportModal({ isOpen, onClose, onImport }) {
         {(phase === "review" || phase === "writing") && (
           <div className="movie-import-review">
             <div className="movie-import-counts" aria-label="Import match summary">
-              <span><strong>{counts.matched}</strong> matched</span>
-              <span><strong>{counts.ambiguous}</strong> need review</span>
-              <span><strong>{counts.unmatched}</strong> unmatched</span>
-              <span><strong>{counts.invalid}</strong> invalid</span>
+              {[
+                ["matched", "matched"],
+                ["ambiguous", "need review"],
+                ["unmatched", "unmatched"],
+                ["invalid", "invalid"],
+              ].map(([category, label]) => (
+                <button
+                  key={category}
+                  type="button"
+                  className={`movie-import-count${activeReviewCategory === category ? " is-active" : ""}`}
+                  onClick={() => toggleReviewCategory(category)}
+                  disabled={counts[category] === 0 || phase === "writing"}
+                  aria-pressed={activeReviewCategory === category}
+                  aria-label={`${counts[category]} ${label}. ${activeReviewCategory === category ? "Return to default order" : "Move category to top"}`}
+                >
+                  <strong>{counts[category]}</strong>
+                  <span>{label}</span>
+                </button>
+              ))}
             </div>
 
             {ratingConflictCount > 0 && (
