@@ -13,6 +13,7 @@ import { fetchAllUpcomingScreenings } from "./screeningsApi.js";
 import { SUPABASE_CONFIGURED } from "./supabaseClient.js";
 import { londonDateKey } from "./time.js";
 import { DayGroup } from "./ScreeningRow.jsx";
+import MovieDayGroup from "./MovieDayGroup.jsx";
 import { useTrakt } from "./useTrakt.js";
 import {
   DEFAULT_SCREENING_FILTERS,
@@ -27,6 +28,7 @@ export default function App() {
   const [search, setSearch] = useState("");
   const [watchDataModalOpen, setWatchDataModalOpen] = useState(false);
   const [movieImportModalOpen, setMovieImportModalOpen] = useState(false);
+  const [resultsView, setResultsView] = useState("time");
 
   const [cinemaSelection, setCinemaSelection] = useState({
     mode: "all",
@@ -533,13 +535,36 @@ export default function App() {
 
       {SUPABASE_CONFIGURED && status === "ready" && groups.length > 0 && (
         <main>
+          <div className="results-view-controls">
+            <button
+              className="results-view-toggle"
+              type="button"
+              onClick={() =>
+                setResultsView((current) =>
+                  current === "time" ? "movie" : "time"
+                )
+              }
+            >
+              {resultsView === "time" ? "By movie" : "By time"}
+            </button>
+          </div>
+
           {groups.map(([key, rows]) => (
-            <DayGroup
-              key={key}
-              dateKey={key}
-              screenings={rows}
-              ratingsByTmdbId={ratingsByTmdbId}
-            />
+            resultsView === "time" ? (
+              <DayGroup
+                key={key}
+                dateKey={key}
+                screenings={rows}
+                ratingsByTmdbId={ratingsByTmdbId}
+              />
+            ) : (
+              <MovieDayGroup
+                key={key}
+                dateKey={key}
+                screenings={rows}
+                ratingsByTmdbId={ratingsByTmdbId}
+              />
+            )
           ))}
         </main>
       )}

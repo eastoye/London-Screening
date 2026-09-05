@@ -297,18 +297,7 @@ function classifyTitleMatch(record: ImportRecord, candidates: Candidate[]) {
   }
 
 
-  if (
-    exact.length > 1 &&
-    exact[0].popularity >= 10 &&
-    exact[0].popularity >= Math.max(1, exact[1].popularity) * 5
-  ) {
-    return {
-      status: "matched",
-      match: exact[0],
-      candidates,
-      reason: "Exact title with one clearly dominant movie result.",
-    };
-  }
+  // Popularity cannot disambiguate movies sharing an exact title.
 
   return {
     status: "ambiguous",
@@ -441,3 +430,4 @@ Deno.serve(async (request) => {
     return json({ error: "Movies could not be matched right now. Please try again." }, 502, headers);
   }
 });
+
