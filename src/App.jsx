@@ -363,7 +363,7 @@ export default function App() {
                   onClick={openMovieImportModal}
                   disabled={traktBusy}
                 >
-                  Import movies
+                  Import movie data
                 </button>
 
                 <button
