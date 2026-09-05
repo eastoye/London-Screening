@@ -14,6 +14,7 @@ const corsHeaders = {
 const TMDB_API_BASE = "https://api.themoviedb.org/3";
 const PAGE_SIZE = 1000;
 const MAX_TITLES_PER_RUN = 100;
+const MIN_KNOWN_IDENTITY_CONFIDENCE = 0.95;
 const DEFAULT_RETRY_AFTER_DAYS = 7;
 const MAX_RETRY_AFTER_DAYS = 365;
 const DAY_IN_MILLISECONDS = 24 * 60 * 60 * 1000;
@@ -25,6 +26,7 @@ interface ScreeningRow {
   id: string;
   movie_title: string;
   movie_id: string | null;
+  start_time: string;
 }
 
 interface MovieRow {
@@ -50,6 +52,8 @@ interface CleanedTitle {
   normalisedTitle: string;
   identityKey: string;
   yearHint: number | null;
+  yearHintSource: "explicit" | "anniversary" | null;
+  anniversaryYears: number | null;
   heavilyAltered: boolean;
   removedLabels: string[];
   fallbackCategory:
@@ -60,6 +64,8 @@ interface CleanedTitle {
     | "General Screening";
   intentionallyUnmatchable: boolean;
 }
+
+type KnownIdentityIndex = Map<string, Map<number, MovieRow>>;
 
 interface TitleGroup {
   cleaned: CleanedTitle;
@@ -99,6 +105,7 @@ interface RunRequest {
   dry_run?: boolean;
   mode?: RunMode;
   max_titles?: number;
+  offset?: number;
   after?: string;
   titles?: string[];
   retry_after_days?: number;
@@ -175,10 +182,15 @@ function fallbackCategory(title: string): CleanedTitle["fallbackCategory"] {
   return "General Screening";
 }
 
-function cleanScreeningTitle(raw: string): CleanedTitle {
+function cleanScreeningTitle(
+  raw: string,
+  referenceYear = new Date().getUTCFullYear(),
+): CleanedTitle {
   const original = raw.trim().replace(/\s+/g, " ");
   let title = original;
   let yearHint: number | null = null;
+  let yearHintSource: CleanedTitle["yearHintSource"] = null;
+  let anniversaryYears: number | null = null;
   let heavilyAltered = false;
   const removedLabels: string[] = [];
 
@@ -199,6 +211,11 @@ function cleanScreeningTitle(raw: string): CleanedTitle {
   };
 
   // Screening-access labels can appear as a prefix.
+  replace(
+    /^(?:(?:send|sen|autism|sensory|dementia)\s*[- ]?\s*friendly|relaxed|accessible)\s+screenin(?:g)?s?\s*[:\-\u2013\u2014]\s*/i,
+    "",
+    "accessibility screening prefix",
+  );
   replace(
     /^(?:(?:hoh|open captioned|captioned|parent\s*(?:and|&)\s*baby|baby cinema|members? screening)\s*[:\-\u2013\u2014]\s*)/i,
     "",
@@ -230,6 +247,24 @@ function cleanScreeningTitle(raw: string): CleanedTitle {
     "",
     "known single-film event prefix",
   );
+
+  // A numbered anniversary tied to the screening year is usable release-year
+  // evidence. It is kept separate from the public title and remains subject to
+  // the normal exact-title and year-compatibility checks.
+  const anniversaryMatch = title.match(
+    /\s*(?:[:+|\u2022]|[-\u2013\u2014]\s*)?\s*[\[(]?\s*(\d{1,3})(?:st|nd|rd|th)\s+anniversary(?:\s+screenings?)?\s*[\])]?\s*$/i,
+  );
+  if (anniversaryMatch) {
+    const years = Number(anniversaryMatch[1]);
+    const inferredYear = referenceYear - years;
+    if (years >= 1 && years <= 150 && inferredYear >= 1870) {
+      anniversaryYears = years;
+      yearHint = inferredYear;
+      yearHintSource = "anniversary";
+      title = title.slice(0, anniversaryMatch.index).trim();
+      removedLabels.push("anniversary-derived release year");
+    }
+  }
 
   // Curatorial wrappers are useful for discovery, but removing them is a
   // substantial change and therefore prevents automatic acceptance.
@@ -301,7 +336,7 @@ function cleanScreeningTitle(raw: string): CleanedTitle {
       "restoration premiere suffix",
     );
     changed ||= replace(
-      /\s*(?:[-\u2013\u2014]\s*)?[\[(]?\s*\d{1,3}(?:st|nd|rd|th)\s+anniversary\s*[\])]?\s*$/i,
+      /\s*(?:[-\u2013\u2014]\s*)?[\[(]?\s*\d{1,3}(?:st|nd|rd|th)\s+anniversary(?:\s+screenings?)?\s*[\])]?\s*$/i,
       "",
       "anniversary suffix",
     );
@@ -351,9 +386,9 @@ function cleanScreeningTitle(raw: string): CleanedTitle {
   );
   if (yearMatch) {
     const parsed = Number(yearMatch[1]);
-    const currentYear = new Date().getUTCFullYear();
-    if (parsed >= 1870 && parsed <= currentYear + 2) {
+    if (parsed >= 1870 && parsed <= referenceYear + 2) {
       yearHint = parsed;
+      yearHintSource = "explicit";
       title = title.slice(0, yearMatch.index).trim();
       removedLabels.push("release year");
     }
@@ -377,6 +412,8 @@ function cleanScreeningTitle(raw: string): CleanedTitle {
     normalisedTitle,
     identityKey: titleIdentity(title, yearHint),
     yearHint,
+    yearHintSource,
+    anniversaryYears,
     heavilyAltered,
     removedLabels,
     fallbackCategory: category,
@@ -558,9 +595,81 @@ function reviewDecision(best: ScoredCandidate, reason: string): MatchDecision {
   };
 }
 
+function isEstablishedIdentity(movie: MovieRow): boolean {
+  if (movie.tmdb_id === null) return false;
+  if (movie.manually_confirmed) return true;
+  return (
+    movie.match_status === "matched" &&
+    (movie.match_confidence ?? 0) >= MIN_KNOWN_IDENTITY_CONFIDENCE &&
+    Boolean(movie.poster_path || movie.poster_override_url)
+  );
+}
+
+function knownIdentityTitleKeys(movie: MovieRow): string[] {
+  const keys = new Set<string>();
+  const displayKey = comparableTitle(movie.display_title);
+  if (displayKey) keys.add(displayKey);
+
+  let normalisedKey = comparableTitle(movie.normalised_title);
+  if (movie.release_year && normalisedKey.endsWith(` ${movie.release_year}`)) {
+    normalisedKey = normalisedKey.slice(0, -String(movie.release_year).length - 1);
+  }
+  if (normalisedKey) keys.add(normalisedKey);
+  return [...keys];
+}
+
+function buildKnownIdentityIndex(movies: MovieRow[]): KnownIdentityIndex {
+  const index: KnownIdentityIndex = new Map();
+  for (const movie of movies) {
+    if (!isEstablishedIdentity(movie) || movie.tmdb_id === null) continue;
+    for (const titleKey of knownIdentityTitleKeys(movie)) {
+      const identities = index.get(titleKey) ?? new Map<number, MovieRow>();
+      identities.set(movie.tmdb_id, movie);
+      index.set(titleKey, identities);
+    }
+  }
+  return index;
+}
+
+function compatibleKnownIdentity(
+  cleaned: CleanedTitle,
+  best: ScoredCandidate,
+  knownIdentities: KnownIdentityIndex,
+): MovieRow | null {
+  if (
+    cleaned.heavilyAltered ||
+    best.similarity < 0.995 ||
+    !best.result.poster_path
+  ) {
+    return null;
+  }
+
+  const identities = knownIdentities.get(cleaned.normalisedTitle);
+  if (!identities || identities.size !== 1) return null;
+  const known = identities.get(best.result.id);
+  if (!known) return null;
+
+  if (
+    known.release_year &&
+    best.releaseYear &&
+    Math.abs(known.release_year - best.releaseYear) > 1
+  ) {
+    return null;
+  }
+  if (
+    cleaned.yearHint &&
+    best.releaseYear &&
+    Math.abs(cleaned.yearHint - best.releaseYear) > 1
+  ) {
+    return null;
+  }
+  return known;
+}
+
 async function decideMatch(
   token: string,
   cleaned: CleanedTitle,
+  knownIdentities: KnownIdentityIndex,
 ): Promise<MatchDecision> {
   if (cleaned.queryTitle.length > 500) {
     return {
@@ -632,6 +741,27 @@ async function decideMatch(
   const second = scored[1];
   const margin = second ? best.score - second.score : 1;
   const exactCandidates = scored.filter((candidate) => candidate.similarity >= 0.995);
+  const knownIdentity = compatibleKnownIdentity(
+    cleaned,
+    best,
+    knownIdentities,
+  );
+
+  if (knownIdentity) {
+    return {
+      status: "matched",
+      confidence: Math.min(
+        1,
+        Math.max(0.98, knownIdentity.match_confidence ?? 0),
+      ),
+      tmdbId: best.result.id,
+      posterPath: best.result.poster_path ?? null,
+      releaseYear: best.releaseYear ?? knownIdentity.release_year,
+      candidateTmdbId: null,
+      candidatePosterPath: null,
+      reason: `exact title and unique established on-site identity TMDB ${best.result.id}`,
+    };
+  }
 
   if (cleaned.yearHint) {
     if (best.similarity >= 0.995 && best.yearCompatible) {
@@ -650,8 +780,12 @@ async function decideMatch(
         candidateTmdbId: null,
         candidatePosterPath: null,
         reason: best.yearExact
-          ? `exact title and release year via "${best.matchedName}"`
-          : `exact title; TMDB date differs by one year from explicit screening year`,
+          ? cleaned.yearHintSource === "anniversary"
+            ? `exact title and ${cleaned.anniversaryYears}-year anniversary implies ${cleaned.yearHint}`
+            : `exact title and release year via "${best.matchedName}"`
+          : cleaned.yearHintSource === "anniversary"
+            ? `exact title; TMDB date is within one year of the anniversary-derived ${cleaned.yearHint} hint`
+            : `exact title; TMDB date differs by one year from explicit screening year`,
       };
     }
     if (
@@ -756,7 +890,7 @@ async function fetchAllFutureScreenings(
   for (let from = 0; ; from += PAGE_SIZE) {
     const { data, error } = await supabase
       .from("screenings")
-      .select("id, movie_title, movie_id")
+      .select("id, movie_title, movie_id, start_time")
       .eq("active", true)
       .gt("start_time", nowIso)
       .order("id", { ascending: true })
@@ -815,7 +949,11 @@ function retryable(movie: MovieRow | undefined, retryBefore: string): boolean {
 function groupScreenings(screenings: ScreeningRow[]): TitleGroup[] {
   const groups = new Map<string, TitleGroup>();
   for (const screening of screenings) {
-    const cleaned = cleanScreeningTitle(screening.movie_title);
+    const screeningDate = new Date(screening.start_time);
+    const referenceYear = Number.isFinite(screeningDate.getTime())
+      ? screeningDate.getUTCFullYear()
+      : new Date().getUTCFullYear();
+    const cleaned = cleanScreeningTitle(screening.movie_title, referenceYear);
     if (!cleaned.identityKey) continue;
     const existing = groups.get(cleaned.identityKey);
     if (existing) existing.screenings.push(screening);
@@ -1033,6 +1171,10 @@ Deno.serve(async (req: Request) => {
     1,
     Math.min(MAX_TITLES_PER_RUN, Math.floor(body.max_titles ?? 50)),
   );
+  const requestedOffset = Number(body.offset);
+  const offset = dryRun && Number.isFinite(requestedOffset)
+    ? Math.max(0, Math.min(10_000, Math.floor(requestedOffset)))
+    : 0;
   const after = typeof body.after === "string" ? body.after : "";
   const requestedRetryAfterDays = Number(body.retry_after_days);
   const retryAfterDays = Number.isFinite(requestedRetryAfterDays)
@@ -1092,6 +1234,7 @@ Deno.serve(async (req: Request) => {
         .filter((movie) => movie.tmdb_id !== null)
         .map((movie) => [movie.tmdb_id as number, movie]),
     );
+    const knownIdentities = buildKnownIdentityIndex(movies);
 
     const allGroups = groupScreenings(screenings);
     const movieUsageKeys = new Map<string, Set<string>>();
@@ -1146,8 +1289,8 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    const batch = eligible.slice(0, maxTitles);
-    const hasMore = eligible.length > batch.length;
+    const batch = eligible.slice(offset, offset + maxTitles);
+    const hasMore = eligible.length > offset + batch.length;
     const results: Array<Record<string, unknown>> = [];
     const stats = {
       matched: 0,
@@ -1195,7 +1338,7 @@ Deno.serve(async (req: Request) => {
           : null;
         const decision = existingMatchedMovie
           ? await refreshExistingTmdbMatch(tmdbToken, existingMatchedMovie)
-          : await decideMatch(tmdbToken, group.cleaned);
+          : await decideMatch(tmdbToken, group.cleaned, knownIdentities);
         stats[decision.status] += 1;
         let persistence: Record<string, unknown> = { action: "dry_run" };
         if (!dryRun) {
@@ -1218,6 +1361,8 @@ Deno.serve(async (req: Request) => {
           query_title: group.cleaned.queryTitle,
           normalised_title: group.cleaned.identityKey,
           year_hint: group.cleaned.yearHint,
+          year_hint_source: group.cleaned.yearHintSource,
+          anniversary_years: group.cleaned.anniversaryYears,
           removed_labels: group.cleaned.removedLabels,
           heavily_altered: group.cleaned.heavilyAltered,
           fallback_category: group.cleaned.fallbackCategory,
@@ -1267,6 +1412,7 @@ Deno.serve(async (req: Request) => {
       success: stats.errors === 0,
       dry_run: dryRun,
       mode,
+      offset,
       retry_before: mode === "retry" ? retryBefore : null,
       retry_after_days: mode === "retry" && body.retry_before === undefined
         ? retryAfterDays
@@ -1277,7 +1423,10 @@ Deno.serve(async (req: Request) => {
       active_future_unique_titles: allGroups.length,
       eligible_unique_titles: eligible.length,
       processed_unique_titles: batch.length,
-      remaining_eligible_titles: Math.max(eligible.length - batch.length, 0),
+      remaining_eligible_titles: Math.max(
+        eligible.length - offset - batch.length,
+        0,
+      ),
       next_cursor: mode === "retry" ? null : hasMore ? lastKey : null,
       stats,
       results,
