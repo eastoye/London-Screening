@@ -204,6 +204,26 @@ function cleanScreeningTitle(raw: string): CleanedTitle {
     "preview/premiere prefix",
     true,
   );
+  replace(
+    /^(?:preview|premiere)\s*!\s*/i,
+    "",
+    "preview/premiere prefix",
+  );
+
+  // These are known programme or event wrappers with one film title after
+  // the delimiter. Keep this allowlist narrow so generic colon and plus signs
+  // in film titles, double bills and mixed programmes are not split.
+  replace(
+    /^fighting spirit\s*:\s*/i,
+    "",
+    "known programme prefix",
+    true,
+  );
+  replace(
+    /^live folk music,\s*czech drinks\s*\+\s*/i,
+    "",
+    "known single-film event prefix",
+  );
 
   // Curatorial wrappers are useful for discovery, but removing them is a
   // substantial change and therefore prevents automatic acceptance.
@@ -275,9 +295,19 @@ function cleanScreeningTitle(raw: string): CleanedTitle {
       "restoration premiere suffix",
     );
     changed ||= replace(
-      /\s*[-\u2013\u2014]\s+\d{1,3}(?:st|nd|rd|th)\s+anniversary\s*$/i,
+      /\s*(?:[-\u2013\u2014]\s*)?[\[(]?\s*\d{1,3}(?:st|nd|rd|th)\s+anniversary\s*[\])]?\s*$/i,
       "",
       "anniversary suffix",
+    );
+    changed ||= replace(
+      /\s*[-\u2013\u2014]\s+\d{1,3}(?:st|nd|rd|th)\s+birthday\s+of\s+.{2,100}\s*$/i,
+      "",
+      "birthday event suffix",
+    );
+    changed ||= replace(
+      /\s+(?:sing[\s-]?along)\s*$/i,
+      "",
+      "sing-along suffix",
     );
     changed ||= replace(
       /\s*(?:[+|\u2022]|[-\u2013\u2014:]\s+)\s*(?:director'?s|theatrical|extended|final|anniversary|restored)\s+(?:cut|edition|restoration)\s*$/i,
