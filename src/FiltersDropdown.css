@@ -91,13 +91,18 @@
   top: calc(100% + 7px);
   right: 0;
   z-index: 20;
-  width: 310px;
+  width: 460px;
   max-width: calc(100vw - 36px);
   overflow: hidden;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius);
   background: var(--surface);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
+}
+
+.filters-dropdown-scroll {
+  max-height: min(620px, calc(100vh - 180px));
+  overflow-y: auto;
 }
 
 .filters-dropdown-header {
@@ -245,6 +250,78 @@
   color: var(--accent);
 }
 
+.filters-dropdown-group {
+  margin: 0;
+  padding: 12px 13px 14px;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.filters-dropdown-group legend {
+  display: block;
+  width: 100%;
+  margin: 0 0 9px;
+  padding: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.filters-dropdown-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.filters-dropdown-chip {
+  position: relative;
+  display: block;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.filters-dropdown-chip input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.filters-dropdown-chip span {
+  display: block;
+  overflow: hidden;
+  padding: 7px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.25;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filters-dropdown-chip:hover span {
+  border-color: var(--ink-mute);
+}
+
+.filters-dropdown-chip input:checked + span {
+  border-color: var(--accent);
+  background: rgba(184, 52, 26, 0.07);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.filters-dropdown-chip input:focus-visible + span {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.filters-dropdown-options-last {
+  border-top: 1px solid var(--line);
+}
+
 .filters-dropdown-footer {
   padding: 10px 12px;
   border-top: 1px solid var(--line);
@@ -295,7 +372,11 @@
   .filters-dropdown-panel {
     right: auto;
     left: 0;
-    width: min(320px, calc(100vw - 28px));
+    width: min(460px, calc(100vw - 28px));
     max-width: none;
+  }
+
+  .filters-dropdown-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

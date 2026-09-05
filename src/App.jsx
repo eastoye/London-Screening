@@ -14,6 +14,11 @@ import { SUPABASE_CONFIGURED } from "./supabaseClient.js";
 import { londonDateKey } from "./time.js";
 import { DayGroup } from "./ScreeningRow.jsx";
 import { useTrakt } from "./useTrakt.js";
+import {
+  DEFAULT_SCREENING_FILTERS,
+  countScreeningFilters,
+  screeningMatchesMetadataFilters,
+} from "./screeningFilters.js";
 
 export default function App() {
   const [screenings, setScreenings] = useState([]);
@@ -33,7 +38,10 @@ export default function App() {
   }));
 
   const [minRating, setMinRating] = useState(0);
-  const [watchlistOnly, setWatchlistOnly] = useState(false);
+  const [screeningFilters, setScreeningFilters] = useState(() => ({
+    ...DEFAULT_SCREENING_FILTERS,
+  }));
+  const watchlistOnly = screeningFilters.watchlistOnly;
 
   const trakt = useTrakt();
 
@@ -89,12 +97,18 @@ export default function App() {
   useEffect(() => {
     if (!trakt.isConnected) {
       setMinRating(0);
-      setWatchlistOnly(false);
+      setScreeningFilters((current) => ({
+        ...current,
+        watchlistOnly: false,
+      }));
       return;
     }
 
     if (trakt.watchlistStatus === "error") {
-      setWatchlistOnly(false);
+      setScreeningFilters((current) => ({
+        ...current,
+        watchlistOnly: false,
+      }));
     }
   }, [trakt.isConnected, trakt.watchlistStatus]);
 
@@ -179,7 +193,10 @@ export default function App() {
 
   const handleTraktDisconnect = () => {
     setMinRating(0);
-    setWatchlistOnly(false);
+    setScreeningFilters((current) => ({
+      ...current,
+      watchlistOnly: false,
+    }));
     trakt.disconnect();
   };
 
@@ -244,6 +261,10 @@ export default function App() {
         return false;
       }
 
+      if (!screeningMatchesMetadataFilters(screening, screeningFilters)) {
+        return false;
+      }
+
       const ratingFilterActive = minRating > 0;
       const traktFilterActive = ratingFilterActive || watchlistOnly;
 
@@ -274,6 +295,7 @@ export default function App() {
     search,
     selectedCinemas,
     matchesDateTime,
+    screeningFilters,
     minRating,
     ratingsByTmdbId,
     watchlistOnly,
@@ -334,7 +356,7 @@ export default function App() {
     search.trim() === "" &&
     !dateTimeFilterActive &&
     minRating === 0 &&
-    !watchlistOnly
+    countScreeningFilters(screeningFilters) === 0
   ) {
     emptyMessage = "No upcoming screenings found.";
   }
@@ -469,8 +491,8 @@ export default function App() {
         </select>
 
         <FiltersDropdown
-          watchlistOnly={watchlistOnly}
-          onApply={setWatchlistOnly}
+          value={screeningFilters}
+          onApply={setScreeningFilters}
           isConnected={trakt.isConnected}
           watchlistStatus={trakt.watchlistStatus}
           watchlistError={trakt.watchlistError}
