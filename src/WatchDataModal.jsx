@@ -16,6 +16,10 @@ const SERVICES = [
     id: "letterboxd",
     name: "Letterboxd",
   },
+  {
+    id: "other",
+    name: "Other",
+  },
 ];
 
 function CloseIcon() {
@@ -132,6 +136,27 @@ function LetterboxdInstructions() {
   );
 }
 
+function OtherInstructions() {
+  return (
+    <div className="watch-data-service-copy">
+      <h3>Other services or lists</h3>
+      <p>
+        You can also import from other movie websites and lists. Copy the films
+        — or simply copy the contents of a watchlist page — then paste the text
+        into <strong>Import movies</strong>. London Screenings will try to
+        identify possible movie titles and let you review the matches before
+        importing them to Trakt.
+      </p>
+      <p style={{ marginTop: 10 }}>
+        This can work with pages from sites such as Rotten Tomatoes, even when
+        they do not provide a dedicated export. Results vary by page, and
+        unrelated page text may be left unmatched. Review the matches carefully
+        before importing.
+      </p>
+    </div>
+  );
+}
+
 export default function WatchDataModal({
   isOpen,
   onClose,
@@ -223,6 +248,8 @@ export default function WatchDataModal({
 
   if (service === "letterboxd") {
     serviceInstructions = <LetterboxdInstructions />;
+  } else if (service === "other") {
+    serviceInstructions = <OtherInstructions />;
   } else {
     serviceInstructions = <ImdbInstructions />;
   }
@@ -318,8 +345,14 @@ export default function WatchDataModal({
                 Move your data to Trakt
               </h2>
               <p id={descriptionId}>
-                Export your existing data, connect Trakt, then review and
-                import the movies directly in London Screenings.
+                {service === "other" ? (
+                  "Copy your movie list, connect Trakt, then review and import the movies directly in London Screenings."
+                ) : (
+                  <>
+                    Export your existing data, connect Trakt, then review and
+                    import the movies directly in London Screenings.
+                  </>
+                )}
               </p>
             </div>
 
@@ -341,7 +374,11 @@ export default function WatchDataModal({
             <div className="watch-data-step">
               <span className="watch-data-step-number">2</span>
               <div className="watch-data-step-content">
-                <h3>Export your existing data</h3>
+                <h3>
+                  {service === "other"
+                    ? "Copy your movie list"
+                    : "Export your existing data"}
+                </h3>
 
                 <div
                   className="watch-data-service-tabs"
@@ -393,8 +430,19 @@ export default function WatchDataModal({
               <div className="watch-data-step-content">
                 <h3>Import and review</h3>
                 <p>
-                  After connecting, select <strong>Import movies</strong>, upload
-                  the export, resolve uncertain matches, and confirm the changes.
+                  {service === "other" ? (
+                    <>
+                      After connecting, select <strong>Import movies</strong>,
+                      paste your copied text into the text input, review the
+                      matches, skip unrelated or incorrect results, and confirm
+                      the changes.
+                    </>
+                  ) : (
+                    <>
+                      After connecting, select <strong>Import movies</strong>, upload
+                      the export, resolve uncertain matches, and confirm the changes.
+                    </>
+                  )}
                 </p>
               </div>
             </div>
