@@ -1,5 +1,5 @@
-[functions.tmdb-search-helper]
+[functions.match-import-movies]
 verify_jwt = false
 
-[functions.match-import-movies]
+[functions.match-movie-posters]
 verify_jwt = false
