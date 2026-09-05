@@ -135,41 +135,13 @@
   background: var(--bg);
 }
 
-.movie-import-count {
-  min-width: 0;
-  padding: 7px 5px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
+.movie-import-counts span {
   color: var(--ink-mute);
-  font: inherit;
   font-size: 12px;
   text-align: center;
-  cursor: pointer;
 }
 
-.movie-import-count:hover:not(:disabled) {
-  border-color: var(--line);
-  background: var(--surface);
-}
-
-.movie-import-count:focus-visible {
-  border-color: var(--ink-soft);
-  outline: 3px solid rgba(0, 0, 0, 0.08);
-}
-
-.movie-import-count.is-active {
-  border-color: var(--line-strong);
-  background: var(--surface);
-  color: var(--ink-soft);
-}
-
-.movie-import-count:disabled {
-  cursor: default;
-  opacity: 0.45;
-}
-
-.movie-import-count strong {
+.movie-import-counts strong {
   display: block;
   color: var(--ink);
   font-size: 18px;
