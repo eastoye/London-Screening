@@ -14,6 +14,9 @@ const corsHeaders = {
 const TMDB_API_BASE = "https://api.themoviedb.org/3";
 const PAGE_SIZE = 1000;
 const MAX_TITLES_PER_RUN = 100;
+const DEFAULT_RETRY_AFTER_DAYS = 7;
+const MAX_RETRY_AFTER_DAYS = 365;
+const DAY_IN_MILLISECONDS = 24 * 60 * 60 * 1000;
 
 type MatchStatus = "matched" | "needs_review" | "unmatched";
 type RunMode = "unlinked" | "retry" | "all";
@@ -38,6 +41,7 @@ interface MovieRow {
   candidate_tmdb_id: number | null;
   candidate_poster_path: string | null;
   match_reason: string | null;
+  poster_match_last_attempted_at: string | null;
 }
 
 interface CleanedTitle {
@@ -97,6 +101,8 @@ interface RunRequest {
   max_titles?: number;
   after?: string;
   titles?: string[];
+  retry_after_days?: number;
+  retry_before?: string;
 }
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -424,6 +430,31 @@ async function tmdbGet(token: string, path: string): Promise<unknown> {
   return await response.json();
 }
 
+async function refreshExistingTmdbMatch(
+  token: string,
+  movie: MovieRow,
+): Promise<MatchDecision> {
+  const result = (await tmdbGet(
+    token,
+    `/movie/${movie.tmdb_id}?language=en-GB`,
+  )) as TmdbResult;
+  const refreshedYear = releaseYear(result);
+  const posterPath = result.poster_path ?? null;
+
+  return {
+    status: "matched",
+    confidence: movie.match_confidence ?? 1,
+    tmdbId: movie.tmdb_id,
+    posterPath,
+    releaseYear: movie.release_year ?? refreshedYear,
+    candidateTmdbId: null,
+    candidatePosterPath: null,
+    reason: posterPath
+      ? "poster refreshed from the existing TMDB match"
+      : "existing TMDB match preserved; TMDB still has no poster",
+  };
+}
+
 async function searchTmdb(
   token: string,
   query: string,
@@ -746,7 +777,7 @@ async function fetchAllMovies(
     const { data, error } = await supabase
       .from("movies")
       .select(
-        "id, normalised_title, display_title, release_year, tmdb_id, poster_path, match_status, match_confidence, manually_confirmed, poster_override_url, candidate_tmdb_id, candidate_poster_path, match_reason",
+        "id, normalised_title, display_title, release_year, tmdb_id, poster_path, match_status, match_confidence, manually_confirmed, poster_override_url, candidate_tmdb_id, candidate_poster_path, match_reason, poster_match_last_attempted_at",
       )
       .order("id", { ascending: true })
       .range(from, from + PAGE_SIZE - 1);
@@ -773,14 +804,12 @@ async function linkScreenings(
   }
 }
 
-function retryable(movie: MovieRow | undefined): boolean {
-  if (!movie) return true;
-  if (movie.manually_confirmed) return false;
-  return (
-    movie.match_status !== "matched" ||
-    !movie.tmdb_id ||
-    !movie.poster_path
-  );
+function retryable(movie: MovieRow | undefined, retryBefore: string): boolean {
+  if (!movie || movie.manually_confirmed) return false;
+  if (movie.poster_path || movie.poster_override_url) return false;
+  if (!movie.poster_match_last_attempted_at) return true;
+  const attemptedAt = Date.parse(movie.poster_match_last_attempted_at);
+  return !Number.isFinite(attemptedAt) || attemptedAt <= Date.parse(retryBefore);
 }
 
 function groupScreenings(screenings: ScreeningRow[]): TitleGroup[] {
@@ -811,6 +840,75 @@ function findManualMovie(
     if (linked?.manually_confirmed) return linked;
   }
   return null;
+}
+
+function linkedMoviesForGroup(
+  group: TitleGroup,
+  moviesById: Map<string, MovieRow>,
+): MovieRow[] {
+  const linked = new Map<string, MovieRow>();
+  for (const screening of group.screenings) {
+    if (!screening.movie_id) continue;
+    const movie = moviesById.get(screening.movie_id);
+    if (movie) linked.set(movie.id, movie);
+  }
+  return [...linked.values()];
+}
+
+function findExistingMatchedMovie(
+  group: TitleGroup,
+  moviesById: Map<string, MovieRow>,
+): MovieRow | null {
+  const matches = linkedMoviesForGroup(group, moviesById).filter(
+    (movie) =>
+      movie.match_status === "matched" &&
+      movie.tmdb_id !== null &&
+      !movie.poster_path &&
+      !movie.poster_override_url,
+  );
+  const tmdbIds = new Set(matches.map((movie) => movie.tmdb_id));
+  return matches.length > 0 && tmdbIds.size === 1 ? matches[0] : null;
+}
+
+function groupRetrySortTime(
+  group: TitleGroup,
+  moviesById: Map<string, MovieRow>,
+  retryBefore: string,
+): number {
+  const attempts = linkedMoviesForGroup(group, moviesById)
+    .filter((movie) => retryable(movie, retryBefore))
+    .map((movie) =>
+      movie.poster_match_last_attempted_at
+        ? Date.parse(movie.poster_match_last_attempted_at)
+        : Number.NEGATIVE_INFINITY
+    )
+    .sort((left, right) => left - right);
+  return attempts[0] ?? Number.POSITIVE_INFINITY;
+}
+
+async function markLinkedMoviesAttempted(
+  supabase: SupabaseClient,
+  group: TitleGroup,
+  moviesById: Map<string, MovieRow>,
+  attemptedAt: string,
+): Promise<void> {
+  const movies = linkedMoviesForGroup(group, moviesById).filter(
+    (movie) => !movie.manually_confirmed,
+  );
+  const ids = movies.map((movie) => movie.id);
+  for (let index = 0; index < ids.length; index += 100) {
+    const { error } = await supabase
+      .from("movies")
+      .update({ poster_match_last_attempted_at: attemptedAt })
+      .in("id", ids.slice(index, index + 100));
+    if (error) {
+      throw new Error(`poster attempt update failed: ${error.message}`);
+    }
+  }
+  for (const movie of movies) {
+    movie.poster_match_last_attempted_at = attemptedAt;
+    moviesById.set(movie.id, movie);
+  }
 }
 
 async function persistDecision(
@@ -851,6 +949,7 @@ async function persistDecision(
     candidate_tmdb_id: decision.candidateTmdbId,
     candidate_poster_path: decision.candidatePosterPath,
     match_reason: decision.reason,
+    poster_match_last_attempted_at: now,
     updated_at: now,
   };
 
@@ -873,7 +972,7 @@ async function persistDecision(
       .update(updateValues)
       .eq("id", target.id)
       .select(
-        "id, normalised_title, display_title, release_year, tmdb_id, poster_path, match_status, match_confidence, manually_confirmed, poster_override_url, candidate_tmdb_id, candidate_poster_path, match_reason",
+        "id, normalised_title, display_title, release_year, tmdb_id, poster_path, match_status, match_confidence, manually_confirmed, poster_override_url, candidate_tmdb_id, candidate_poster_path, match_reason, poster_match_last_attempted_at",
       )
       .single();
     if (error || !data) {
@@ -888,7 +987,7 @@ async function persistDecision(
         normalised_title: group.cleaned.identityKey,
       })
       .select(
-        "id, normalised_title, display_title, release_year, tmdb_id, poster_path, match_status, match_confidence, manually_confirmed, poster_override_url, candidate_tmdb_id, candidate_poster_path, match_reason",
+        "id, normalised_title, display_title, release_year, tmdb_id, poster_path, match_status, match_confidence, manually_confirmed, poster_override_url, candidate_tmdb_id, candidate_poster_path, match_reason, poster_match_last_attempted_at",
       )
       .single();
     if (error || !data) {
@@ -935,6 +1034,28 @@ Deno.serve(async (req: Request) => {
     Math.min(MAX_TITLES_PER_RUN, Math.floor(body.max_titles ?? 50)),
   );
   const after = typeof body.after === "string" ? body.after : "";
+  const requestedRetryAfterDays = Number(body.retry_after_days);
+  const retryAfterDays = Number.isFinite(requestedRetryAfterDays)
+    ? Math.max(
+        1,
+        Math.min(MAX_RETRY_AFTER_DAYS, Math.floor(requestedRetryAfterDays)),
+      )
+    : DEFAULT_RETRY_AFTER_DAYS;
+  let retryBefore = new Date(
+    Date.now() - retryAfterDays * DAY_IN_MILLISECONDS,
+  ).toISOString();
+  if (body.retry_before !== undefined) {
+    if (
+      typeof body.retry_before !== "string" ||
+      !Number.isFinite(Date.parse(body.retry_before))
+    ) {
+      return jsonResponse(
+        { success: false, error: "retry_before must be a valid ISO timestamp." },
+        400,
+      );
+    }
+    retryBefore = new Date(body.retry_before).toISOString();
+  }
   const requestedTitles = new Set(
     Array.isArray(body.titles)
       ? body.titles
@@ -999,10 +1120,31 @@ Deno.serve(async (req: Request) => {
       }
       return group.screenings.some((screening) =>
         screening.movie_id
-          ? retryable(moviesById.get(screening.movie_id))
-          : true,
+          ? retryable(moviesById.get(screening.movie_id), retryBefore)
+          : false,
       );
     });
+
+    if (mode === "retry" && requestedTitles.size === 0) {
+      eligible.sort((left, right) => {
+        const leftAttempt = groupRetrySortTime(
+          left,
+          moviesById,
+          retryBefore,
+        );
+        const rightAttempt = groupRetrySortTime(
+          right,
+          moviesById,
+          retryBefore,
+        );
+        if (leftAttempt !== rightAttempt) {
+          return leftAttempt < rightAttempt ? -1 : 1;
+        }
+        return left.cleaned.identityKey.localeCompare(
+          right.cleaned.identityKey,
+        );
+      });
+    }
 
     const batch = eligible.slice(0, maxTitles);
     const hasMore = eligible.length > batch.length;
@@ -1048,7 +1190,12 @@ Deno.serve(async (req: Request) => {
       }
 
       try {
-        const decision = await decideMatch(tmdbToken, group.cleaned);
+        const existingMatchedMovie = mode === "retry"
+          ? findExistingMatchedMovie(group, moviesById)
+          : null;
+        const decision = existingMatchedMovie
+          ? await refreshExistingTmdbMatch(tmdbToken, existingMatchedMovie)
+          : await decideMatch(tmdbToken, group.cleaned);
         stats[decision.status] += 1;
         let persistence: Record<string, unknown> = { action: "dry_run" };
         if (!dryRun) {
@@ -1086,6 +1233,21 @@ Deno.serve(async (req: Request) => {
         });
       } catch (error) {
         stats.errors += 1;
+        if (!dryRun && mode === "retry") {
+          try {
+            await markLinkedMoviesAttempted(
+              supabase,
+              group,
+              moviesById,
+              new Date().toISOString(),
+            );
+          } catch (attemptError) {
+            console.error(
+              "[match-movie-posters] failed to record retry attempt:",
+              attemptError,
+            );
+          }
+        }
         results.push({
           public_titles: [...new Set(group.screenings.map((s) => s.movie_title))],
           query_title: group.cleaned.queryTitle,
@@ -1105,13 +1267,18 @@ Deno.serve(async (req: Request) => {
       success: stats.errors === 0,
       dry_run: dryRun,
       mode,
+      retry_before: mode === "retry" ? retryBefore : null,
+      retry_after_days: mode === "retry" && body.retry_before === undefined
+        ? retryAfterDays
+        : null,
       run_started_at: runStartedAt,
       run_completed_at: new Date().toISOString(),
       active_future_screenings: screenings.length,
       active_future_unique_titles: allGroups.length,
       eligible_unique_titles: eligible.length,
       processed_unique_titles: batch.length,
-      next_cursor: hasMore ? lastKey : null,
+      remaining_eligible_titles: Math.max(eligible.length - batch.length, 0),
+      next_cursor: mode === "retry" ? null : hasMore ? lastKey : null,
       stats,
       results,
     });
