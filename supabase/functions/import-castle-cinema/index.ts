@@ -1,3 +1,4 @@
+import {normaliseProjectionFormats,normaliseScreeningTags,type AccessibilityFeature,type ProgrammeType} from "../_shared/screeningMetadata.ts";
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import {
@@ -20,6 +21,16 @@ const SOURCE_PREFIX = "castle";
 const MIN_SCREENINGS = 5;
 
 interface ParsedScreening {
+  format: string | null;
+  screen_name: string | null;
+  screening_label: string | null;
+  screening_tags: ReturnType<typeof normaliseScreeningTags>;
+  accessibility_features: AccessibilityFeature[];
+  programme_types: ProgrammeType[];
+  availability_status: "sold_out" | "unknown" | "available";
+  verified_artwork_url: string | null;
+  source_runtime_minutes?: number | null;
+  source_directors?: string[];
   movie_title: string;
   start_time_iso: string | null;
   perf_id: string;
@@ -54,7 +65,7 @@ function parseCastle(html: string): ParsedScreening[] {
 
     // Programme URL: href="/programme/{prog-id}/{slug}/"
     const progLinkMatch = tileBody.match(
-      /href="\/programme\/\d+\/[a-z0-9-]+\//i
+      /href="(\/programme\/\d+\/[^"?#]+\/)"/i
     );
     const programmeUrl = progLinkMatch
       ? `https://thecastlecinema.com${progLinkMatch[1]}`
@@ -73,7 +84,8 @@ function parseCastle(html: string): ParsedScreening[] {
       // sold-out span loses its display:none style. The span itself is always
       // present in the markup, so checking the span alone would mark everything
       // sold out — rely on the anchor class instead.
-      const soldOut = /is-sold-out|off-sale/.test(perfMatch[0]);
+      const anchor=perfMatch[0].split(">")[0];
+      const soldOut = /\bis-sold-out\b/.test(anchor);
 
       // Screening type / format.
       const stMatch = perfBody.match(
@@ -86,13 +98,14 @@ function parseCastle(html: string): ParsedScreening[] {
       const screenLabel = screenMatch ? screenMatch[1].trim() : null;
 
       let format: string | null = null;
-      if (screeningType && screenLabel) {
-        format = `${screeningType}, ${screenLabel}`;
-      } else if (screeningType) {
-        format = screeningType;
-      } else if (screenLabel) {
-        format = screenLabel;
-      }
+      format = normaliseProjectionFormats([screeningType]).join(", ") || null;
+      const filters=anchor.match(/data-filters="([^"]*)"/)?.[1]?.split(",")||[];
+      const accessibility_features:AccessibilityFeature[]=[];
+      if(filters.includes("audio-described"))accessibility_features.push("audio_described");
+      if(filters.includes("hard-of-hearing"))accessibility_features.push("captioned");
+      if(filters.includes("relaxed"))accessibility_features.push("relaxed");
+      const programme_types:ProgrammeType[]=filters.includes("parent-baby")?["parent_and_baby"]:[];
+      const image=tileBody.match(/<img[^>]*class="film-poster"[^>]*src="([^"]+)"/)?.[1];
 
       // Booking URL from href.
       const hrefMatch = perfMatch[0].match(/href="([^"]+)"/);
@@ -120,7 +133,13 @@ function parseCastle(html: string): ParsedScreening[] {
         startTimeIso = utc.toISOString();
       }
 
+      if(!startTimeIso)throw new Error("Invalid Castle performance time");
       results.push({
+        format,screen_name:screenLabel,screening_label:screeningType,
+        screening_tags:normaliseScreeningTags([screeningType]),
+        accessibility_features,programme_types,
+        availability_status:soldOut?"sold_out":/\b(?:off-sale|inactive)\b/.test(anchor)?"unknown":bookingUrl?"available":"unknown",
+        verified_artwork_url:image?new URL(decodeEntities(image),CASTLE_URL).href:null,
         movie_title: movieTitle,
         start_time_iso: startTimeIso,
         perf_id: perfId,
@@ -134,7 +153,15 @@ function parseCastle(html: string): ParsedScreening[] {
     }
   }
 
-  return results;
+  const sourceCount=[...html.matchAll(/data-perf-id="\d+"/g)].length;
+  if(results.length!==sourceCount)throw new Error("Castle calendar incomplete: unparsed performances");
+  const unique=new Map<string,ParsedScreening>();
+  for(const row of results){
+    const old=unique.get(row.source_reference);
+    if(old&&(old.movie_title!==row.movie_title||old.start_time_iso!==row.start_time_iso))throw new Error("Conflicting Castle performance ID");
+    unique.set(row.source_reference,row);
+  }
+  return [...unique.values()];
 }
 
 Deno.serve(async (req: Request) => {
@@ -196,6 +223,7 @@ Deno.serve(async (req: Request) => {
         "Accept-Language": "en-GB,en;q=0.9",
       },
       redirect: "follow",
+      signal: AbortSignal.timeout(20000),
     });
     if (!resp.ok) {
       const msg = `Failed to fetch calendar: HTTP ${resp.status} ${resp.statusText}`;
@@ -236,6 +264,30 @@ Deno.serve(async (req: Request) => {
     `[import-castle-cinema] ${upcoming.length} upcoming, ${skippedPast} past skipped`
   );
 
+  try{
+    const {count:previous,error}=await supabase.from("screenings").select("id",{count:"exact",head:true}).eq("cinema_name",CINEMA_NAME).eq("active",true).gt("start_time",nowUtc.toISOString());
+    if(error)throw error;
+    if(upcoming.length<MIN_SCREENINGS||((previous??0)>=10&&upcoming.length<Math.ceil((previous??0)*0.5)))throw new Error("Suspicious Castle count drop");
+    const urls=[...new Set(upcoming.map(p=>p.programme_url).filter((u):u is string=>Boolean(u)))];
+    for(let i=0;i<urls.length;i+=5)await Promise.all(urls.slice(i,i+5).map(async url=>{
+      try{
+        const response=await fetch(url,{signal:AbortSignal.timeout(10000)});
+        if(!response.ok)throw new Error(String(response.status));
+        const page=await response.text();
+        const runtime=page.match(/class="film-duration[^"]*"[^>]*>\s*(\d+)\s*mins/);
+        const director=page.match(/class="film-director"[^>]*>([\s\S]*?)<\/span>/);
+        for(const row of upcoming)if(row.programme_url===url){
+          if(runtime)row.source_runtime_minutes=Number(runtime[1]);
+          if(director)row.source_directors=[stripTags(director[1])];
+        }
+      }catch(e){console.warn("Optional Castle detail unavailable",url,String(e));}
+    }));
+  }catch(e){
+    const message=e instanceof Error?e.message:String(e);
+    await endRun(ctx,runId,"failed",parsed.length,0,message);
+    return jsonResponse({success:false,error:message},500);
+  }
+
   // Build records. Use booking_url if available, otherwise programme_url.
   const records: ScreeningRecord[] = upcoming
     .filter((p) => p.start_time_iso !== null)
@@ -246,6 +298,11 @@ Deno.serve(async (req: Request) => {
       booking_url: p.booking_url ?? p.programme_url,
       format: p.format ?? null,
       sold_out: p.sold_out,
+      source_event_url:p.programme_url,verified_artwork_url:p.verified_artwork_url,
+      source_runtime_minutes:p.source_runtime_minutes??null,source_directors:p.source_directors??[],
+      screen_name:p.screen_name,screening_label:p.screening_label,screening_tags:p.screening_tags,
+      projection_formats:normaliseProjectionFormats([p.format]),
+      accessibility_features:p.accessibility_features,programme_types:p.programme_types,availability_status:p.availability_status,
       source_reference: p.source_reference,
       last_seen_at: new Date().toISOString(),
     }));
