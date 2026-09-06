@@ -13,6 +13,7 @@ import {
 } from "../_shared/importSafety.ts";
 import {
   normaliseProjectionFormats,
+  normaliseScreeningTags,
   type AccessibilityFeature,
   type AvailabilityStatus,
   type ProgrammeType,
@@ -28,6 +29,14 @@ const RATIO_GUARD_MIN_EXISTING = 10;
 const MIN_EXPECTED_RATIO = 0.5;
 
 type ParsedScreening = {
+  source_event_url:string|null;
+  verified_artwork_url:string|null;
+  source_release_year:number|null;
+  source_runtime_minutes:number|null;
+  source_directors:string[];
+  screen_name:string|null;
+  screening_label:string|null;
+  screening_tags:ReturnType<typeof normaliseScreeningTags>;
   movie_title: string;
   start_time_iso: string;
   booking_url: string | null;
@@ -82,7 +91,7 @@ function metadataFromPerformance(explicit: string) {
   const accessibility_features: AccessibilityFeature[] = [];
   const programme_types: ProgrammeType[] = [];
 
-  if (/\b(?:HOH\s*subtitles?|captioned|closed\s*captioned|subtitled)\b/i.test(explicit)) {
+  if (/\b(?:HOH\s*subtitles?|captioned|closed\s*captioned)\b/i.test(explicit)) {
     accessibility_features.push("captioned");
   }
   if (/\b(?:audio\s*described|audio\s*description|\bAD\b)\b/i.test(explicit)) {
@@ -107,6 +116,7 @@ function metadataFromPerformance(explicit: string) {
 function parseCastleSidcup(html: string): ParsedScreening[] {
   const results: ParsedScreening[] = [];
   const seen = new Set<string>();
+  let parsedMarkers=0;
 
   const tileRegex =
     /<div class="programme-tile tile[^"]*"[^>]*data-prog-id="(\d+)"[^>]*>([\s\S]*?)(?=<div class="programme-tile tile|<h3 class="date"|$)/g;
@@ -135,7 +145,8 @@ function parseCastleSidcup(html: string): ParsedScreening[] {
     while ((perfMatch = perfRegex.exec(tileBody)) !== null) {
       const perfId = perfMatch[1];
       const startTime = parseLocalStart(perfMatch[2]);
-      if (!startTime) continue;
+      if (!startTime) throw new Error("Invalid Sidcup performance date");
+      parsedMarkers++;
 
       const source_reference = `${SOURCE_PREFIX}:performance:${perfId}`;
       if (seen.has(source_reference)) continue;
@@ -144,7 +155,7 @@ function parseCastleSidcup(html: string): ParsedScreening[] {
       const anchor = perfMatch[0];
       const perfBody = perfMatch[3];
 
-      const soldOut = /\b(?:is-sold-out|off-sale)\b/i.test(anchor);
+      const soldOut = /\bis-sold-out\b/i.test(anchor.split(">")[0]);
 
       const href = anchor.match(/href=["']([^"']+)["']/i)?.[1] ?? null;
       const bookingUrl = absoluteUrl(href) ?? programmeUrl;
@@ -166,7 +177,12 @@ function parseCastleSidcup(html: string): ParsedScreening[] {
       ].filter(Boolean);
 
       const explicit = explicitParts.join(" ");
-      const metadata = metadataFromPerformance(explicit);
+      const filters=anchor.match(/data-filters="([^"]*)"/)?.[1]?.split(",")||[];
+      const metadata = metadataFromPerformance(screeningType?stripTags(screeningType):"");
+      if(filters.includes("audio-described")&&!metadata.accessibility_features.includes("audio_described"))metadata.accessibility_features.push("audio_described");
+      if(filters.includes("hard-of-hearing")&&!metadata.accessibility_features.includes("captioned"))metadata.accessibility_features.push("captioned");
+      if(filters.includes("relaxed")&&!metadata.accessibility_features.includes("relaxed"))metadata.accessibility_features.push("relaxed");
+      if(filters.includes("parent-baby")&&!metadata.programme_types.includes("parent_and_baby"))metadata.programme_types.push("parent_and_baby");
 
       const displayTags: string[] = [];
       const cleanedScreeningType = screeningType ? stripTags(screeningType) : "";
@@ -175,7 +191,12 @@ function parseCastleSidcup(html: string): ParsedScreening[] {
       const cleanedScreen = screenLabel ? stripTags(screenLabel) : "";
       if (cleanedScreen) displayTags.push(cleanedScreen);
 
+      const artwork=tileBody.match(/<img[^>]*class="film-poster"[^>]*src="([^"]+)"/)?.[1];
       results.push({
+        source_event_url:programmeUrl,verified_artwork_url:absoluteUrl(artwork||null),
+        source_release_year:null,source_runtime_minutes:null,source_directors:[],
+        screen_name:cleanedScreen||null,screening_label:cleanedScreeningType||null,
+        screening_tags:normaliseScreeningTags([cleanedScreeningType]),
         movie_title: movieTitle,
         start_time_iso: startTime,
         booking_url: bookingUrl,
@@ -186,15 +207,16 @@ function parseCastleSidcup(html: string): ParsedScreening[] {
         programme_types: metadata.programme_types,
         availability_status: soldOut
           ? "sold_out"
-          : bookingUrl
+          : bookingUrl && !/off-sale|inactive/.test(anchor.split(">")[0])
             ? "available"
             : "unknown",
         display_format:
-          displayTags.length > 0 ? displayTags.join(", ") : null,
+          metadata.projection_formats.join(", ") || null,
       });
     }
   }
 
+  if(parsedMarkers!==[...html.matchAll(/data-perf-id="\d+"/g)].length)throw new Error("Incomplete Sidcup calendar");
   return results;
 }
 
@@ -282,7 +304,7 @@ Deno.serve(async (req: Request) => {
   const runId = runStart.runId;
 
   try {
-    const response = await fetch(CALENDAR_URL, fetchOpts);
+    const response = await fetch(CALENDAR_URL, {...fetchOpts,signal:AbortSignal.timeout(20000)});
 
     if (!response.ok) {
       throw new Error(
@@ -334,7 +356,26 @@ Deno.serve(async (req: Request) => {
       );
     }
 
+    const urls=[...new Set(future.map(r=>r.source_event_url).filter((u):u is string=>Boolean(u)))];
+    for(let i=0;i<urls.length;i+=5)await Promise.all(urls.slice(i,i+5).map(async url=>{
+      try{
+        const response=await fetch(url,{...fetchOpts,signal:AbortSignal.timeout(10000)});
+        if(!response.ok)throw new Error(String(response.status));
+        const page=await response.text();
+        const runtime=page.match(/class="film-duration[^"]*"[^>]*>\s*(\d+)\s*mins/);
+        const year=page.match(/class="film-year[^"]*"[^>]*>\s*((?:18|19|20|21)\d{2})\s*</);
+        const director=page.match(/class="film-director"[^>]*>([\s\S]*?)<\/span>/);
+        for(const r of future)if(r.source_event_url===url){
+          r.source_runtime_minutes=runtime?Number(runtime[1]):null;
+          r.source_release_year=year?Number(year[1]):null;
+          r.source_directors=director?[stripTags(director[1])]:[];
+        }
+      }catch(error){console.warn("Optional Sidcup detail unavailable",url,String(error));}
+    }));
     const records = future.map((screening) => ({
+      source_event_url:screening.source_event_url,verified_artwork_url:screening.verified_artwork_url,
+      source_runtime_minutes:screening.source_runtime_minutes,source_release_year:screening.source_release_year,source_directors:screening.source_directors,
+      screen_name:screening.screen_name,screening_label:screening.screening_label,screening_tags:screening.screening_tags,
       cinema_name: CINEMA_NAME,
       movie_title: screening.movie_title,
       start_time: screening.start_time_iso,
@@ -418,3 +459,4 @@ Deno.serve(async (req: Request) => {
     );
   }
 });
+

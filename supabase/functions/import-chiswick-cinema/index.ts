@@ -1,3 +1,4 @@
+import {movieMetadata} from "./metadata.ts";
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import {
@@ -31,6 +32,7 @@ const MONTHS: Record<string, number> = {
 };
 
 interface ParsedScreening {
+  metadata?:ReturnType<typeof movieMetadata>;
   movie_title: string;
   start_time_iso: string | null;
   booking_url: string;
@@ -87,21 +89,22 @@ async function fetchMoviePages(
   for (const [movieUrl, fallbackTitle] of movieLinks) {
     let movieHtml: string;
     try {
-      const resp = await fetch(movieUrl, fetchOpts);
+      const resp = await fetch(movieUrl, {...fetchOpts,signal:AbortSignal.timeout(12000)});
       if (!resp.ok) {
         console.warn(
           `[import-chiswick] movie page ${movieUrl} returned HTTP ${resp.status}`
         );
-        continue;
+        throw new Error(`Movie page HTTP ${resp.status}`);
       }
       movieHtml = await resp.text();
     } catch (err) {
       console.warn(
         `[import-chiswick] failed to fetch ${movieUrl}: ${err instanceof Error ? err.message : String(err)}`
       );
-      continue;
+      throw err;
     }
 
+    const metadata=movieMetadata(movieHtml,movieUrl);
     // Extract the movie title from the page (first <h1> after "Showtimes").
     const titleMatch = movieHtml.match(
       /<h1[^>]*>([\s\S]*?)<\/h1>/
@@ -174,6 +177,7 @@ async function fetchMoviePages(
 
       results.push({
         movie_title: movieTitle,
+        metadata,
         start_time_iso: utc.toISOString(),
         booking_url: bookingUrl,
         performance_id: performanceId,
@@ -183,11 +187,21 @@ async function fetchMoviePages(
       });
     }
 
+    const expected=[...movieHtml.matchAll(/href="[^"]*checkout\/showing\/[^"]*\/\d+"/g)].length;
+    const actual=results.filter(r=>r.metadata?.source_event_url===movieUrl).length;
+    if(actual!==expected)throw new Error("Chiswick incomplete performance parsing");
     // Be gentle between page fetches.
     await new Promise((r) => setTimeout(r, 50));
   }
 
-  return results;
+  const unique=new Map<string,ParsedScreening>();
+  for(const r of results){
+    if(r.parse_error)throw new Error(r.parse_error);
+    const old=unique.get(r.source_reference);
+    if(old&&(old.movie_title!==r.movie_title||old.start_time_iso!==r.start_time_iso))throw new Error("Conflicting Chiswick performance ID");
+    unique.set(r.source_reference,r);
+  }
+  return [...unique.values()];
 }
 
 Deno.serve(async (req: Request) => {
@@ -241,7 +255,7 @@ Deno.serve(async (req: Request) => {
   // 1. Fetch the programme page.
   let programmeHtml: string;
   try {
-    const resp = await fetch(PROGRAMME_URL, fetchOpts);
+    const resp = await fetch(PROGRAMME_URL, {...fetchOpts,signal:AbortSignal.timeout(20000)});
     if (!resp.ok) {
       const msg = `Failed to fetch programme: HTTP ${resp.status} ${resp.statusText}`;
       await endRun(ctx, runId, "failed", 0, 0, msg);
@@ -297,9 +311,17 @@ Deno.serve(async (req: Request) => {
     `[import-chiswick] ${upcoming.length} upcoming, ${skippedPast} past skipped`
   );
 
+  const {count:previous,error:countError}=await supabase.from("screenings").select("id",{count:"exact",head:true}).eq("cinema_name",CINEMA_NAME).eq("active",true).gt("start_time",nowUtc.toISOString());
+  if(countError||upcoming.length<MIN_SCREENINGS||((previous??0)>=10&&upcoming.length<Math.ceil((previous??0)*0.5))){
+    const error=countError?.message||"Suspicious Chiswick count drop";
+    await endRun(ctx,runId,"failed",parsed.length,0,error);
+    return jsonResponse({success:false,error},500);
+  }
   const records: ScreeningRecord[] = upcoming
     .filter((p) => p.start_time_iso !== null && p.source_reference)
     .map((p) => ({
+      ...p.metadata,
+      availability_status: "unknown",
       cinema_name: CINEMA_NAME,
       movie_title: p.movie_title,
       start_time: p.start_time_iso as string,
@@ -350,3 +372,4 @@ Deno.serve(async (req: Request) => {
     })),
   });
 });
+

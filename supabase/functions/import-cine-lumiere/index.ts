@@ -20,6 +20,10 @@ const SOURCE_PREFIX = "cinelumiere";
 const MIN_SCREENINGS = 3;
 
 interface ParsedScreening {
+  screening_label?:string|null;
+  accessibility_features?:Array<'relaxed'>;
+  source_event_url?:string;
+  availability_status?:"available"|"sold_out"|"unknown";
   movie_title: string;
   start_time_iso: string | null;
   booking_url: string;
@@ -31,6 +35,7 @@ interface ParsedScreening {
 }
 
 const MONTHS: Record<string, number> = {
+  sept: 9,
   jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
   jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
   january: 1, february: 2, march: 3, april: 4, june: 6,
@@ -71,8 +76,37 @@ function parse24hTime(t: string): { hour: number; minute: number } | null {
 //       </tr>
 //     </table></td></tr></table>
 //   </div>
+async function repairDateOverrides(html:string):Promise<string>{
+  const pattern=/<tr><td class="PeformanceListDate">([^<]+)<\/td>[\s\S]*?<td class="PeformanceListTimes">([\s\S]*?)<\/td><\/tr>/g;
+  const repairs=new Map<string,string>();
+  for(const match of html.matchAll(pattern)){
+    if(parseSavoyDate(match[1]))continue;
+    // A separately ticketed workshop is not a film performance.
+    const heading=html.slice(0,match.index).split('<h2 class="subtitle first">').pop()?.split('</h2>')[0]||'';
+    if(/^Book your free ticket for the workshop$/i.test(match[1].trim())||/>Stop Motion Animation Workshop<\/a>/.test(heading)){repairs.set(match[0],'');continue;}
+    const href=match[2].match(/href="([^"]*TcsPerformance_\d+[^\"]*)"/)?.[1];
+    if(!href)throw new Error('Missing booking reference for date override');
+    const response=await fetch(href,{signal:AbortSignal.timeout(12000)});
+    if(!response.ok)throw new Error('Cannot resolve Savoy date override');
+    const page=await response.text();
+    const serial=page.match(/name="PerformanceStartDateTime" value="([\d.]+)"/)?.[1];
+    if(!serial)throw new Error('Missing Savoy numeric performance date');
+    // Savoy serial dates: epoch and fractional-day time checked against an
+    // ordinary dated performance in this same live source.
+    const local=new Date(Date.UTC(1899,11,30)+Math.round(Number(serial)*1440)*60000);
+    if(local.getUTCFullYear()<2020||local.getUTCFullYear()>2100)throw new Error('Invalid Savoy serial date');
+    const time=match[2].match(/>(\d{1,2}:\d{2})<\/a>/)?.[1];
+    if(time!==String(local.getUTCHours()).padStart(2,'0')+':'+String(local.getUTCMinutes()).padStart(2,'0'))throw new Error('Savoy numeric date/time disagreement');
+    const date=local.toLocaleDateString('en-GB',{timeZone:'UTC',weekday:'long',day:'numeric',month:'short',year:'numeric'}).replace(',','');
+    repairs.set(match[0],match[0].replace(match[1],date));
+  }
+  for(const [before,after] of repairs)html=html.replace(before,after);
+  return html;
+}
+
 function parseCineLumiere(html: string): ParsedScreening[] {
   const results: ParsedScreening[] = [];
+  let expected=0;
 
   // Split into programme blocks by the subtitle heading.
   const blockRegex =
@@ -82,10 +116,14 @@ function parseCineLumiere(html: string): ParsedScreening[] {
     const progId = blockMatch[1];
     const rawTitle = blockMatch[2];
     const cert = blockMatch[3].trim();
+    const eventUrl=html.match(new RegExp('href="([^"]*TcsProgramme_'+progId+')"'))?.[1];
     const showtimesBody = blockMatch[4];
 
     const movieTitle = decodeEntities(stripTags(rawTitle)).trim();
     if (!movieTitle) continue;
+    // Explicit non-film products in the same Savoy catalogue.
+    if(movieTitle==='Language Activity'||movieTitle==='Stop Motion Animation Workshop')continue;
+    expected += [...showtimesBody.matchAll(/href="[^"]*TcsPerformance_\d+[^"]*"/g)].length;
 
     // Each row: <td class="PeformanceListDate">Date</td> ... <td class="PeformanceListTimes">...<a href="...TcsPerformance_{id}...">Time</a>...</td>
     // A date may have multiple times following it.
@@ -103,7 +141,7 @@ function parseCineLumiere(html: string): ParsedScreening[] {
           start_time_iso: null,
           booking_url: "",
           performance_id: "",
-          format: cert || null,
+          format: null,
           sold_out: false,
           source_reference: "",
           parse_error: `Unparseable date: "${dateText}"`,
@@ -130,7 +168,7 @@ function parseCineLumiere(html: string): ParsedScreening[] {
             start_time_iso: null,
             booking_url: bookingUrl,
             performance_id: performanceId,
-            format: cert || null,
+            format: null,
             sold_out: false,
             source_reference: `${SOURCE_PREFIX}:${performanceId}`,
             parse_error: `Unparseable time: "${timeText}"`,
@@ -148,10 +186,13 @@ function parseCineLumiere(html: string): ParsedScreening[] {
 
         results.push({
           movie_title: movieTitle,
+          source_event_url:eventUrl,availability_status:"available",
+          screening_label:stripTags(timesBody.match(/class="PerformanceNotesSmall">([\s\S]*?)<\/span>/)?.[1]||'')||null,
+          accessibility_features:/class="PerformanceNotesSmall">\s*\(Relaxed Screening\)/.test(timesBody)?['relaxed']:[],
           start_time_iso: utc.toISOString(),
           booking_url: bookingUrl,
           performance_id: performanceId,
-          format: cert || null,
+          format: null,
           sold_out: false,
           source_reference: `${SOURCE_PREFIX}:${performanceId}`,
         });
@@ -163,7 +204,7 @@ function parseCineLumiere(html: string): ParsedScreening[] {
           /class="PerformanceStatusSmall">([^<]+)<\/span>/
         );
         const statusText = statusMatch ? statusMatch[1].trim() : "";
-        const closed = /closed for booking|sold out|unavailable/i.test(statusText);
+        const closed = /sold out/i.test(statusText);
         // Try to find a time text even in closed performances.
         const timeTextMatch = timesBody.match(/>\s*(\d{1,2}:\d{2})\s*</);
         const timeText = timeTextMatch ? timeTextMatch[1] : null;
@@ -181,10 +222,11 @@ function parseCineLumiere(html: string): ParsedScreening[] {
             const fallbackId = `${progId}-${dateParts.year}${String(dateParts.month).padStart(2, "0")}${String(dateParts.day).padStart(2, "0")}-${timeText.replace(":", "")}`;
             results.push({
               movie_title: movieTitle,
+              source_event_url:eventUrl,availability_status:closed?"sold_out":"unknown",
               start_time_iso: utc.toISOString(),
               booking_url: "",
               performance_id: fallbackId,
-              format: cert || null,
+              format: null,
               sold_out: closed,
               source_reference: `${SOURCE_PREFIX}:${fallbackId}`,
             });
@@ -194,7 +236,16 @@ function parseCineLumiere(html: string): ParsedScreening[] {
     }
   }
 
-  return results;
+  if(results.some(r=>r.parse_error))throw new Error("Ciné Lumière contains unparseable dates or times: "+results.filter(r=>r.parse_error).map(r=>r.parse_error).slice(0,3).join('; '));
+  const actual=results.filter(r=>r.booking_url).length;
+  if(expected!==actual)throw new Error("Incomplete Ciné Lumière performance parsing: "+actual+" / "+expected+"; unmatched: "+[...html.matchAll(/href="[^"]*TcsPerformance_(\d+)[^"]*"/g)].map(m=>m[1]).filter(id=>!results.some(r=>r.performance_id===id)).slice(0,5).join(','));
+  const unique=new Map<string,ParsedScreening>();
+  for(const r of results){
+    const old=unique.get(r.source_reference);
+    if(old&&(old.movie_title!==r.movie_title||old.start_time_iso!==r.start_time_iso))throw new Error("Conflicting Ciné Lumière source reference");
+    unique.set(r.source_reference,r);
+  }
+  return [...unique.values()];
 }
 
 Deno.serve(async (req: Request) => {
@@ -245,6 +296,7 @@ Deno.serve(async (req: Request) => {
         "Accept-Language": "en-GB,en;q=0.9",
       },
       redirect: "follow",
+      signal:AbortSignal.timeout(20000),
     });
     if (!resp.ok) {
       const msg = `Failed to fetch programme: HTTP ${resp.status} ${resp.statusText}`;
@@ -262,7 +314,7 @@ Deno.serve(async (req: Request) => {
   let parsed: ParsedScreening[] = [];
   let parseErrors: string[] = [];
   try {
-    parsed = parseCineLumiere(html);
+    parsed = parseCineLumiere(await repairDateOverrides(html));
     parseErrors = parsed.filter((p) => p.parse_error).map((p) => p.parse_error as string);
     console.log(`[import-cine-lumiere] parsed ${parsed.length} screenings, ${parseErrors.length} errors`);
   } catch (err) {
@@ -284,9 +336,18 @@ Deno.serve(async (req: Request) => {
   const skippedPast = parsed.length - upcoming.length;
   console.log(`[import-cine-lumiere] ${upcoming.length} upcoming, ${skippedPast} past skipped`);
 
+  const {count:previous,error:countError}=await supabase.from("screenings").select("id",{count:"exact",head:true}).eq("cinema_name",CINEMA_NAME).eq("active",true).gt("start_time",nowUtc.toISOString());
+  if(countError||upcoming.length<MIN_SCREENINGS||((previous??0)>=10&&upcoming.length<Math.ceil((previous??0)*0.5))){
+    const error=countError?.message||"Suspicious Ciné Lumière count drop";
+    await endRun(ctx,runId,"failed",parsed.length,0,error);
+    return jsonResponse({success:false,error},500);
+  }
   const records: ScreeningRecord[] = upcoming
     .filter((p) => p.start_time_iso !== null && p.source_reference)
     .map((p) => ({
+      source_event_url:p.source_event_url,
+      screening_label:p.screening_label??null,accessibility_features:p.accessibility_features??[],
+      availability_status:p.sold_out?"sold_out":p.booking_url?"available":"unknown",
       cinema_name: CINEMA_NAME,
       movie_title: p.movie_title,
       start_time: p.start_time_iso as string,
