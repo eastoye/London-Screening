@@ -10,6 +10,12 @@ import {
   type ScreeningRecord,
   type ImportRunContext,
 } from "../_shared/importSafety.ts";
+import {
+  compactStrings,
+  normaliseScreeningTags,
+  parseExplicitYear,
+  parseRuntimeMinutes,
+} from "../_shared/screeningMetadata.ts";
 
 const CINEMA_NAME = "Barbican Cinema";
 const CINEMA_URL = "https://www.barbican.org.uk/whats-on/cinema";
@@ -33,6 +39,16 @@ interface ParsedScreening {
   accessibility_features: string[];
   programme_types: string[];
   availability_status: AvailabilityStatus;
+  event_url: string;
+  film_title_hint: string | null;
+  source_release_year: number | null;
+  source_runtime_minutes: number | null;
+  source_directors: string[];
+  source_countries: string[];
+  screen_name: string | null;
+  screening_label: string | null;
+  screening_tags: ReturnType<typeof normaliseScreeningTags>;
+  verified_artwork_url: string | null;
 }
 
 const fetchOpts: RequestInit = {
@@ -98,20 +114,25 @@ function parse12h(value: string): { hour: number; minute: number } | null {
 
 function normaliseTitleAndFormat(rawTitle: string): {
   title: string;
+  filmTitleHint: string | null;
   projection_formats: string[];
 } {
   const formats: string[] = [];
   if (/\[\s*35mm\s*\]/i.test(rawTitle)) formats.push("35mm");
   if (/\[\s*70mm\s*\]/i.test(rawTitle)) formats.push("70mm");
   if (/\[\s*imax\s*\]/i.test(rawTitle)) formats.push("imax");
-  const title = rawTitle
+  const filmTitleHint = rawTitle
     .replace(/\[\s*(?:35mm|70mm|imax)\s*\]/gi, "")
     .replace(/^parent\s*(?:&|and)\s*baby\s+screening\s*:\s*/i, "")
     .replace(/^relaxed\s+screening\s*:\s*/i, "")
     .replace(/^senior(?:s| community)?\s+(?:cinema|screening)\s*:\s*/i, "")
     .replace(/\s+/g, " ")
     .trim();
-  return { title, projection_formats: Array.from(new Set(formats)) };
+  return {
+    title: rawTitle.replace(/\s+/g, " ").trim(),
+    filmTitleHint: filmTitleHint || null,
+    projection_formats: Array.from(new Set(formats)),
+  };
 }
 
 function isClearlyNonFilm(title: string): boolean {
@@ -141,7 +162,7 @@ function normaliseMetadata(explicit: string, soldOut: boolean) {
   if (/\bsenior(?:s| community)?\s+(?:cinema|screening)\b/i.test(explicit)) {
     programme_types.push("seniors");
   }
-  if (/\bmembers?[- ]only\b/i.test(explicit)) {
+  if (/\bmembers?[- ]only\b|\bmembers?'?\s+screening\b/i.test(explicit)) {
     programme_types.push("members_only");
   }
 
@@ -235,8 +256,14 @@ function parseDayPage(html: string, isoDate: string): {
         continue;
       }
 
-      const explicitMetadata = `${rawTitle} ${tagsText} ${textFromHtml(instance)}`;
+      const instanceText = textFromHtml(instance);
+      const explicitMetadata = `${rawTitle} ${tagsText} ${instanceText}`;
       const metadata = normaliseMetadata(explicitMetadata, soldOut);
+      const sourceLabels = compactStrings([
+        /\bCAP\b/.test(instanceText) ? "CAP" : null,
+        /\bAD\b/.test(instanceText) ? "AD" : null,
+        soldOut ? "Sold out" : null,
+      ]);
       const start = londonToUtc(year, month, day, time.hour, time.minute);
       screenings.push({
         movie_title: titleData.title,
@@ -248,6 +275,16 @@ function parseDayPage(html: string, isoDate: string): {
         accessibility_features: metadata.accessibility_features,
         programme_types: metadata.programme_types,
         availability_status: metadata.availability_status,
+        event_url: eventHref,
+        film_title_hint: titleData.filmTitleHint,
+        source_release_year: null,
+        source_runtime_minutes: null,
+        source_directors: [],
+        source_countries: [],
+        screen_name: null,
+        screening_label: sourceLabels.length ? sourceLabels.join(", ") : null,
+        screening_tags: normaliseScreeningTags([tagsText, instanceText]),
+        verified_artwork_url: null,
       });
     }
   }
@@ -255,18 +292,59 @@ function parseDayPage(html: string, isoDate: string): {
   return { screenings, excluded, errors };
 }
 
-async function fetchDay(isoDate: string): Promise<string> {
-  const response = await fetch(`${CINEMA_URL}?day=${isoDate}`, fetchOpts);
-  if (!response.ok) {
-    throw new Error(`Barbican ${isoDate} returned HTTP ${response.status}`);
+async function fetchHtmlWithRetry(url: string, label: string): Promise<string> {
+  let lastError = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(url, { ...fetchOpts, signal: AbortSignal.timeout(15000) });
+      if (response.ok) return await response.text();
+      lastError = `HTTP ${response.status}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 250));
   }
-  const html = await response.text();
+  throw new Error(`${label} failed after 3 attempts: ${lastError}`);
+}
+
+async function fetchDay(isoDate: string): Promise<string> {
+  const html = await fetchHtmlWithRetry(`${CINEMA_URL}?day=${isoDate}`, `Barbican ${isoDate}`);
   const hasListings = html.includes("cinema-listing-card");
   const isExplicitlyEmpty = /(?:there are\s+)?no\s+(?:cinema\s+listings|films|events|results)\b/i.test(html);
   if (!hasListings && !isExplicitlyEmpty) {
     throw new Error(`Barbican ${isoDate} did not contain the expected cinema listing structure`);
   }
   return html;
+}
+
+function detailValue(html: string, label: string): string | null {
+  const match = html.match(new RegExp(
+    `label-value-list__label[^>]*>\\s*${label}\\s*<\\/span>[\\s\\S]*?label-value-list__value[^>]*>([\\s\\S]*?)<\\/span>`,
+    "i",
+  ));
+  return match ? textFromHtml(match[1]) : null;
+}
+
+function parseEventDetail(html: string) {
+  const artwork = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i)?.[1] || null;
+  const venue = html.match(/event-byline__venue[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i);
+  let dataLayer: { title?: string; subtitle?: string; listingTitle?: string } | null = null;
+  const dataMatch = html.match(/var\s+dataLayer\s*=\s*(\[[\s\S]*?\]);\s*<\/script>/i);
+  if (dataMatch) {
+    try { dataLayer = JSON.parse(dataMatch[1])?.[0] || null; } catch { /* retain nulls */ }
+  }
+  return {
+    filmTitleHint: dataLayer?.title?.trim() || null,
+    releaseYear: parseExplicitYear(detailValue(html, "Release year")),
+    runtime: parseRuntimeMinutes(detailValue(html, "Runtime")),
+    directors: compactStrings([detailValue(html, "Director")]),
+    countries: compactStrings((detailValue(html, "Country of origin") || "").split(/\s*(?:,|\/|;)\s*/)),
+    screenName: venue && /^Cinema\s+\d+$/i.test(textFromHtml(venue[1]))
+      ? textFromHtml(venue[1])
+      : null,
+    artworkUrl: artwork ? decodeEntities(artwork) : null,
+    tags: normaliseScreeningTags([dataLayer?.subtitle]),
+  };
 }
 
 async function getPreviousActiveCount(
@@ -349,6 +427,31 @@ Deno.serve(async (req: Request) => {
       throw new Error(`Programme contained ${parseErrors.length} parse conflicts; database left untouched.`);
     }
 
+    const detailUrls = Array.from(new Set(
+      Array.from(byReference.values()).map((screening) => screening.event_url),
+    ));
+    const details = new Map<string, ReturnType<typeof parseEventDetail>>();
+    for (let i = 0; i < detailUrls.length; i += FETCH_BATCH_SIZE) {
+      const batch = detailUrls.slice(i, i + FETCH_BATCH_SIZE);
+      const pages = await Promise.all(batch.map(async (url) => ({
+        url,
+        html: await fetchHtmlWithRetry(url, `Barbican detail ${url}`),
+      })));
+      for (const page of pages) details.set(page.url, parseEventDetail(page.html));
+    }
+    for (const screening of byReference.values()) {
+      const detail = details.get(screening.event_url);
+      if (!detail) continue;
+      screening.film_title_hint = detail.filmTitleHint || screening.film_title_hint;
+      screening.source_release_year = detail.releaseYear;
+      screening.source_runtime_minutes = detail.runtime;
+      screening.source_directors = detail.directors;
+      screening.source_countries = detail.countries;
+      screening.screen_name = detail.screenName;
+      screening.verified_artwork_url = detail.artworkUrl;
+      screening.screening_tags = Array.from(new Set([...screening.screening_tags, ...detail.tags]));
+    }
+
     const nowUtc = new Date();
     const upcoming = Array.from(byReference.values()).filter(
       (screening) => new Date(screening.start_time_iso).getTime() > nowUtc.getTime(),
@@ -381,6 +484,16 @@ Deno.serve(async (req: Request) => {
       accessibility_features: screening.accessibility_features,
       programme_types: screening.programme_types,
       availability_status: screening.availability_status,
+      film_title_hint: screening.film_title_hint,
+      source_release_year: screening.source_release_year,
+      source_runtime_minutes: screening.source_runtime_minutes,
+      source_directors: screening.source_directors,
+      source_countries: screening.source_countries,
+      source_event_url: screening.event_url,
+      screen_name: screening.screen_name,
+      screening_label: screening.screening_label,
+      screening_tags: screening.screening_tags,
+      verified_artwork_url: screening.verified_artwork_url,
       source_reference: screening.source_reference,
       last_seen_at: new Date().toISOString(),
     })) as Array<ScreeningRecord & {
@@ -401,6 +514,7 @@ Deno.serve(async (req: Request) => {
       screenings_found: upcoming.length,
       screenings_saved: saved,
       previous_active: previousActive,
+      event_pages_fetched: detailUrls.length,
       excluded_non_film: Array.from(excluded).sort(),
       examples: upcoming.slice(0, 5),
       import_started_at: startedAt.toISOString(),

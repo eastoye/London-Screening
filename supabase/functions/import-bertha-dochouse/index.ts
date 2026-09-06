@@ -13,7 +13,11 @@ import {
   type ImportRunContext,
 } from "../_shared/importSafety.ts";
 import {
+  compactStrings,
   normaliseProjectionFormats,
+  normaliseScreeningTags,
+  parseExplicitYear,
+  parseRuntimeMinutes,
   type AccessibilityFeature,
   type AvailabilityStatus,
   type ProgrammeType,
@@ -44,6 +48,16 @@ interface ParsedScreening {
   accessibility_features: AccessibilityFeature[];
   programme_types: ProgrammeType[];
   availability_status: AvailabilityStatus;
+  film_title_hint: string | null;
+  source_release_year: number | null;
+  source_runtime_minutes: number | null;
+  source_directors: string[];
+  source_countries: string[];
+  source_event_url: string;
+  screen_name: string | null;
+  screening_label: string | null;
+  screening_tags: ReturnType<typeof normaliseScreeningTags>;
+  verified_artwork_url: string | null;
 }
 
 interface EventParseResult {
@@ -128,7 +142,7 @@ async function collectEventLinks(): Promise<EventLink[]> {
 
   for (let page = 1; page <= MAX_LISTING_PAGES; page++) {
     const url = page === 1 ? WHATSON_URL : `${WHATSON_URL}page/${page}/`;
-    const response = await fetch(url, fetchOpts);
+    const response = await fetch(url, { ...fetchOpts, signal: AbortSignal.timeout(15000) });
     if (!response.ok) {
       if (page > 1 && response.status === 404) break;
       throw new Error(`DocHouse listings page ${page} returned HTTP ${response.status}`);
@@ -139,6 +153,7 @@ async function collectEventLinks(): Promise<EventLink[]> {
     for (const link of links) found.set(link.slug, link);
 
     if (!hasNextListingsPage(html, page)) break;
+    if (page === MAX_LISTING_PAGES) throw new Error('DocHouse pagination limit reached; import incomplete');
   }
 
   return [...found.values()];
@@ -183,6 +198,29 @@ function explicitMetadata(html: string): {
   return { projection_formats, accessibility_features, programme_types };
 }
 
+function sourceMetadata(html: string, eventUrl: string, title: string) {
+  const director = html.match(/class=["'][^"']*director[^"']*["'][^>]*>[\s\S]*?<strong>([\s\S]*?)<\/strong>/i);
+  const runtime = html.match(/class=["'][^"']*runtime[^"']*["'][^>]*>[\s\S]*?<strong>([\s\S]*?)<\/strong>/i);
+  const artwork = html.match(/<meta\b[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i)?.[1]
+    ?? html.match(/<meta\b[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']/i)?.[1];
+  const yearText = html.match(/class=["'][^"']*(?:release-)?year[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i)?.[1];
+  const countryText = html.match(/class=["'][^"']*countr(?:y|ies)[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i)?.[1];
+  return {
+    film_title_hint: title || null,
+    source_release_year: parseExplicitYear(yearText ? textFromHtml(yearText) : null),
+    source_runtime_minutes: parseRuntimeMinutes(runtime ? textFromHtml(runtime[1]).replace(/(\d)h\b/gi, '$1 hr') : null),
+    source_directors: compactStrings([director ? textFromHtml(director[1]) : null]),
+    source_countries: compactStrings(
+      (countryText ? textFromHtml(countryText) : "").split(/\s*(?:,|\/|;)\s*/)
+    ),
+    source_event_url: eventUrl,
+    screen_name: null,
+    screening_label: null as string | null,
+    screening_tags: normaliseScreeningTags([]),
+    verified_artwork_url: artwork ? decodeMore(artwork) : null,
+  };
+}
+
 function parseDateTimeLabel(label: string, nowLondon: Date): string | null {
   const clean = textFromHtml(label);
   const match = clean.match(
@@ -213,6 +251,7 @@ function parseBookableScreenings(
   section: string,
   title: string,
   metadata: ReturnType<typeof explicitMetadata>,
+  source: ReturnType<typeof sourceMetadata>,
   nowLondon: Date,
 ): ParsedScreening[] {
   const screenings: ParsedScreening[] = [];
@@ -223,7 +262,7 @@ function parseBookableScreenings(
     if (!/https?:\/\/(?:www\.)?curzon\.com\/ticketing\/seats\//i.test(href)) continue;
 
     const start = parseDateTimeLabel(match[2], nowLondon);
-    if (!start) continue;
+    if (!start) throw new Error('Unparsed Curzon performance date; import incomplete');
 
     let bookingUrl: string;
     try {
@@ -244,10 +283,13 @@ function parseBookableScreenings(
       booking_url: bookingUrl,
       source_reference,
       sold_out: false,
-      projection_formats: metadata.projection_formats,
-      accessibility_features: metadata.accessibility_features,
-      programme_types: metadata.programme_types,
+      projection_formats: explicitMetadata(match[2]).projection_formats,
+      accessibility_features: explicitMetadata(match[2]).accessibility_features,
+      programme_types: explicitMetadata(match[2]).programme_types,
       availability_status: "available",
+      ...source,
+      screening_label: textFromHtml(match[2].match(/<div\b[^>]*class=["'][^"']*event-type[^"']*["'][^>]*>([\s\S]*?)<\/div>/i)?.[1] ?? '') || null,
+      screening_tags: normaliseScreeningTags([textFromHtml(match[2])]),
     });
   }
 
@@ -258,6 +300,7 @@ function parseSoldOutScreenings(
   section: string,
   title: string,
   metadata: ReturnType<typeof explicitMetadata>,
+  source: ReturnType<typeof sourceMetadata>,
   nowLondon: Date,
   existing: ParsedScreening[],
   eventSlug: string,
@@ -283,6 +326,7 @@ function parseSoldOutScreenings(
       accessibility_features: metadata.accessibility_features,
       programme_types: metadata.programme_types,
       availability_status: "sold_out",
+      ...source,
     });
   }
 
@@ -290,7 +334,7 @@ function parseSoldOutScreenings(
 }
 
 async function parseEventPage(event: EventLink, nowLondon: Date): Promise<EventParseResult> {
-  const response = await fetch(event.url, fetchOpts);
+  const response = await fetch(event.url, { ...fetchOpts, signal: AbortSignal.timeout(15000) });
   if (!response.ok) throw new Error(`Event ${event.slug} returned HTTP ${response.status}`);
   const html = await response.text();
   const title = extractTitle(html);
@@ -298,8 +342,9 @@ async function parseEventPage(event: EventLink, nowLondon: Date): Promise<EventP
 
   const section = screeningSection(html);
   const metadata = explicitMetadata(section);
-  const bookable = parseBookableScreenings(section, title, metadata, nowLondon);
-  const soldOut = parseSoldOutScreenings(section, title, metadata, nowLondon, bookable, event.slug);
+  const source = sourceMetadata(html, event.url, title);
+  const bookable = parseBookableScreenings(section, title, metadata, source, nowLondon);
+  const soldOut = parseSoldOutScreenings(section, title, metadata, source, nowLondon, bookable, event.slug);
 
   return { screenings: [...bookable, ...soldOut], eventUrl: event.url, title };
 }
@@ -391,7 +436,7 @@ Deno.serve(async (req: Request) => {
     if (events.length === 0) throw new Error("DocHouse listings contained no event detail links.");
 
     const parsed = await parseAllEvents(events, nowLondon);
-    if (parsed.failedEvents.length > Math.max(2, Math.floor(events.length * 0.2))) {
+    if (parsed.failedEvents.length > 0) {
       throw new Error(`Too many DocHouse event pages failed (${parsed.failedEvents.length}/${events.length}): ${parsed.failedEvents.slice(0, 5).join(" | ")}`);
     }
 
@@ -422,6 +467,16 @@ Deno.serve(async (req: Request) => {
       accessibility_features: screening.accessibility_features,
       programme_types: screening.programme_types,
       availability_status: screening.availability_status,
+      film_title_hint: screening.film_title_hint,
+      source_release_year: screening.source_release_year,
+      source_runtime_minutes: screening.source_runtime_minutes,
+      source_directors: screening.source_directors,
+      source_countries: screening.source_countries,
+      source_event_url: screening.source_event_url,
+      screen_name: screening.screen_name,
+      screening_label: screening.screening_label,
+      screening_tags: screening.screening_tags,
+      verified_artwork_url: screening.verified_artwork_url,
     })) as ScreeningRecord[];
 
     const { saved, errors } = await commitImport(ctx, records, nowUtc);
