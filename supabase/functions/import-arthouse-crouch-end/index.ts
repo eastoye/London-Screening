@@ -13,6 +13,12 @@ import {
   type ScreeningRecord,
   type ImportRunContext,
 } from "../_shared/importSafety.ts";
+import {
+  availabilityFromSignals,
+  normaliseProjectionFormats,
+  normaliseScreeningTags,
+  parseRuntimeMinutes,
+} from "../_shared/screeningMetadata.ts";
 
 const BOOKING_NOW_URL = "https://www.arthousecrouchend.co.uk/booking-now/";
 const CINEMA_NAME = "ArtHouse Crouch End";
@@ -35,11 +41,22 @@ interface ParsedScreening {
   sold_out: boolean;
   source_reference: string;
   parse_error?: string;
+  projection_formats: Array<"35mm" | "70mm" | "imax">;
+  accessibility_features: Array<"captioned" | "audio_described" | "relaxed">;
+  programme_types: Array<"members_only" | "parent_and_baby" | "child_required" | "seniors">;
+  availability_status: "available" | "sold_out" | "unknown";
+  film_title_hint: string | null;
+  source_runtime_minutes: number | null;
+  source_event_url: string;
+  screening_label: string | null;
+  screening_tags: ReturnType<typeof normaliseScreeningTags>;
+  verified_artwork_url: string | null;
 }
 
 function parse24hTime(t: string): { hour: number; minute: number } | null {
   const m = t.trim().match(/^(\d{1,2}):(\d{2})$/);
   if (!m) return null;
+  if (Number(m[1]) > 23 || Number(m[2]) > 59) return null;
   return { hour: parseInt(m[1], 10), minute: parseInt(m[2], 10) };
 }
 
@@ -71,16 +88,21 @@ function normaliseTitle(title: string): string {
 //   <div class="times">
 //     <a href="...TcsPerformance_{perfId}" title="Click to Book"><span class="prog-times">{time}<span class="prog-notes">{notes}</span><small class="{status}"></small></span></a>
 //   </div>
-function parseProgrammePage(html: string, nowLondon: Date): ParsedScreening[] {
+function parseProgrammePage(html: string, nowLondon: Date, eventUrl: string): ParsedScreening[] {
   const results: ParsedScreening[] = [];
 
   const titleMatch = html.match(/<h1 class="prog-title">([\s\S]*?)<\/h1>/);
   const movieTitle = titleMatch ? decodeEntities(stripTags(titleMatch[1])).trim() : "";
-  if (!movieTitle) return results;
+  if (!movieTitle) throw new Error(`Missing programme title: ${eventUrl}`);
 
-  // Extract format/type if present
+  // Programme type is not a projection format.
   const typeMatch = html.match(/<span class="prog-type">([^<]+)<\/span>/);
   const progType = typeMatch ? stripTags(typeMatch[1]).trim() : null;
+  const runtimeMatch = html.match(/<span class="prog-length">([\s\S]*?)<\/span>/);
+  const runtime = parseRuntimeMinutes(runtimeMatch ? stripTags(runtimeMatch[1]) : null);
+  const artworkMatch = html.match(/https:\/\/images\.savoysystems\.co\.uk\/ACE\/\d+\.jpg/i);
+  const artworkUrl = artworkMatch?.[0] || null;
+  const isFilm = /programme\s+type\s*:\s*film\b/i.test(progType || "");
 
   // Find all date blocks followed by times blocks.
   // Pattern: <div id="dates" ...><p class="bolder">Date</p></div> ... <div class="times">...<a ...>...</a>...</div>
@@ -97,10 +119,20 @@ function parseProgrammePage(html: string, nowLondon: Date): ParsedScreening[] {
         start_time_iso: null,
         booking_url: "",
         performance_id: "",
-        format: progType,
+        format: null,
         sold_out: false,
         source_reference: "",
         parse_error: `Unparseable date: "${dateText}"`,
+        projection_formats: [],
+        accessibility_features: [],
+        programme_types: [],
+        availability_status: "unknown",
+        film_title_hint: isFilm ? movieTitle : null,
+        source_runtime_minutes: runtime,
+        source_event_url: eventUrl,
+        screening_label: null,
+        screening_tags: [],
+        verified_artwork_url: artworkUrl,
       });
       continue;
     }
@@ -115,18 +147,41 @@ function parseProgrammePage(html: string, nowLondon: Date): ParsedScreening[] {
       const timeText = perfMatch[3];
       const notes = perfMatch[4].trim();
       const statusClass = perfMatch[5];
+      const labels = decodeEntities(notes);
+      const soldOut = /soldout|sold out/i.test(statusClass);
+      const openForSale = /openforsale|open.for.sale/i.test(statusClass);
+      const projectionFormats = normaliseProjectionFormats([labels]);
+      const accessibilityFeatures = [];
+      if (/\b(?:captioned|hard of hearing|SDH|HOH)\b/i.test(labels)) accessibilityFeatures.push("captioned" as const);
+      if (/\baudio described\b|\baudio description\b/i.test(labels)) accessibilityFeatures.push("audio_described" as const);
+      if (/\brelaxed\b/i.test(labels)) accessibilityFeatures.push("relaxed" as const);
+      const programmeTypes = [];
+      if (/\bbabes? in arms\b|\bbaby\s*(?:&|and)\s*carer\b/i.test(labels)) {
+        programmeTypes.push("parent_and_baby" as const);
+      }
+      const canonicalBookingUrl = bookingUrl.replace(/^http:/i, "https:");
 
       const timeParts = parse24hTime(timeText);
       if (!timeParts) {
         results.push({
           movie_title: movieTitle,
           start_time_iso: null,
-          booking_url: bookingUrl,
+          booking_url: canonicalBookingUrl,
           performance_id: performanceId,
-          format: [progType, notes].filter(Boolean).join(", ") || null,
-          sold_out: /soldout|sold out/i.test(statusClass),
+          format: projectionFormats.length ? projectionFormats.join(", ") : null,
+          sold_out: soldOut,
           source_reference: `${SOURCE_PREFIX}:${performanceId}`,
           parse_error: `Unparseable time: "${timeText}"`,
+          projection_formats: projectionFormats,
+          accessibility_features: accessibilityFeatures,
+          programme_types: programmeTypes,
+          availability_status: availabilityFromSignals({ soldOut, openForSale, hasBookingUrl: true }),
+          film_title_hint: isFilm ? movieTitle : null,
+          source_runtime_minutes: runtime,
+          source_event_url: eventUrl,
+          screening_label: labels || null,
+          screening_tags: normaliseScreeningTags([labels]),
+          verified_artwork_url: artworkUrl,
         });
         continue;
       }
@@ -134,15 +189,30 @@ function parseProgrammePage(html: string, nowLondon: Date): ParsedScreening[] {
       results.push({
         movie_title: movieTitle,
         start_time_iso: utc.toISOString(),
-        booking_url: bookingUrl,
+        booking_url: canonicalBookingUrl,
         performance_id: performanceId,
-        format: [progType, notes].filter(Boolean).join(", ") || null,
-        sold_out: /soldout|sold out/i.test(statusClass),
+        format: projectionFormats.length ? projectionFormats.join(", ") : null,
+        sold_out: soldOut,
         source_reference: `${SOURCE_PREFIX}:${performanceId}`,
+        projection_formats: projectionFormats,
+        accessibility_features: accessibilityFeatures,
+        programme_types: programmeTypes,
+        availability_status: availabilityFromSignals({ soldOut, openForSale, hasBookingUrl: true }),
+        film_title_hint: isFilm ? movieTitle : null,
+        source_runtime_minutes: runtime,
+        source_event_url: eventUrl,
+        screening_label: labels || null,
+        screening_tags: normaliseScreeningTags([labels]),
+        verified_artwork_url: artworkUrl,
       });
     }
   }
 
+  const sourceIds = new Set(Array.from(html.matchAll(/TcsPerformance_(\d+)/g), (m) => m[1]));
+  const parsedIds = new Set(results.map((p) => p.performance_id));
+  if ([...sourceIds].some((id) => !parsedIds.has(id))) {
+    throw new Error(`Unparsed performance links: ${eventUrl}`);
+  }
   return results;
 }
 
@@ -163,6 +233,7 @@ function discoverProgrammeLinks(html: string): { url: string; programmeId: strin
 
 async function fetchText(url: string): Promise<string> {
   const resp = await fetch(url, {
+    signal: AbortSignal.timeout(30000),
     headers: {
       "User-Agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
@@ -260,7 +331,7 @@ Deno.serve(async (req: Request) => {
     for (let i = 0; i < pages.length; i++) {
       const pageHtml = pages[i];
       if (!pageHtml) continue;
-      const pageResults = parseProgrammePage(pageHtml, nowLondon);
+      const pageResults = parseProgrammePage(pageHtml, nowLondon, programmeLinks[i].url);
       parsed = parsed.concat(pageResults);
     }
     parseErrors = parsed.filter((p) => p.parse_error).map((p) => p.parse_error as string);
@@ -269,6 +340,12 @@ Deno.serve(async (req: Request) => {
     const msg = `Parse error: ${err instanceof Error ? err.message : String(err)}`;
     await endRun(ctx, runId, "failed", 0, 0, msg);
     return jsonResponse({ success: false, error: msg }, 500);
+  }
+
+  if (fetchErrors.length > 0 || parseErrors.length > 0) {
+    const msg = `Too many programme pages failed (${fetchErrors.length}/${programmeLinks.length}); database left untouched.`;
+    await endRun(ctx, runId, "failed", parsed.length, 0, msg);
+    return jsonResponse({ success: false, error: msg, fetch_errors: fetchErrors.slice(0, 5) }, 502);
   }
 
   if (parsed.length < MIN_SCREENINGS) {
@@ -282,6 +359,15 @@ Deno.serve(async (req: Request) => {
     (p) => p.start_time_iso !== null && new Date(p.start_time_iso).getTime() > nowUtc.getTime()
   );
   const skippedPast = parsed.length - upcoming.length;
+  const previous = await supabase.from('screenings').select('id', { count: 'exact', head: true })
+    .eq('cinema_name', CINEMA_NAME).eq('active', true).gt('start_time', nowUtc.toISOString());
+  const refs = new Set(upcoming.map((p) => p.source_reference));
+  if (previous.error || upcoming.length < MIN_SCREENINGS || refs.size !== upcoming.length ||
+      ((previous.count || 0) >= 10 && upcoming.length < Math.ceil((previous.count || 0) * 0.5))) {
+    const msg = 'Count, duplicate or baseline check failed; database left untouched.';
+    await endRun(ctx, runId, 'failed', parsed.length, 0, msg);
+    return jsonResponse({ success: false, error: msg }, 500);
+  }
   console.log(`[import-arthouse-crouch-end] ${upcoming.length} upcoming, ${skippedPast} past skipped`);
 
   const records: ScreeningRecord[] = upcoming
@@ -293,6 +379,20 @@ Deno.serve(async (req: Request) => {
       booking_url: p.booking_url || null,
       format: p.format,
       sold_out: p.sold_out,
+      projection_formats: p.projection_formats,
+      accessibility_features: p.accessibility_features,
+      programme_types: p.programme_types,
+      availability_status: p.availability_status,
+      film_title_hint: p.film_title_hint,
+      source_release_year: null,
+      source_runtime_minutes: p.source_runtime_minutes,
+      source_directors: [],
+      source_countries: [],
+      source_event_url: p.source_event_url,
+      screen_name: null,
+      screening_label: p.screening_label,
+      screening_tags: p.screening_tags,
+      verified_artwork_url: p.verified_artwork_url,
       source_reference: p.source_reference,
       last_seen_at: new Date().toISOString(),
     }));
