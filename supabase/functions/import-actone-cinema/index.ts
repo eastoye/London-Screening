@@ -1,352 +1,215 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import {
-  corsHeaders,
-  jsonResponse,
-  londonOffsetMinutes,
-  londonToUtc,
-  parse12hTime,
-  inferYear,
-  decodeEntities,
-  stripTags,
-  startRun,
-  endRun,
-  commitImport,
-  type ScreeningRecord,
-  type ImportRunContext,
+  corsHeaders, jsonResponse, londonToUtc, decodeEntities, startRun, endRun,
+  commitImport, type ScreeningRecord, type ImportRunContext,
 } from "../_shared/importSafety.ts";
+import {
+  availabilityFromSignals, compactStrings, normaliseProjectionFormats,
+  normaliseScreeningTags, parseExplicitYear, parseRuntimeMinutes,
+} from "../_shared/screeningMetadata.ts";
 
-const WHATS_ON_URL = "https://www.actonecinema.co.uk/whats-on/";
 const CINEMA_NAME = "ActOne Cinema";
 const SOURCE_PREFIX = "actone";
+const HOME_URL = "https://actonecinema.co.uk/ActOneCinema.dll/Home";
 const MIN_SCREENINGS = 5;
-const BASE_URL = "https://www.actonecinema.co.uk";
+const MIN_EXPECTED_RATIO = 0.5;
+const NON_SCREEN_TYPES = new Set(["Fun in the Lounge", "Live Music"]);
 
-interface ParsedScreening {
-  movie_title: string;
-  start_time_iso: string | null;
-  booking_url: string;
-  booking_id: string;
-  source_reference: string;
-  parse_error?: string;
+interface ActOneSection { IsOpenForSale?: "Y" | "N" | boolean }
+interface ActOnePerformance {
+  ID: number; IsSoldOut?: "Y" | "N"; CC?: "Y" | "N"; AD?: "Y" | "N";
+  SF?: "Y" | "N"; C1?: "Y" | "N"; CB?: "Y" | "N"; SB?: "Y" | "N";
+  DB?: "Y" | "N"; QA?: "Y" | "N"; ES?: "Y" | "N"; RR?: "Y" | "N";
+  RS?: "Y" | "N"; FP?: "Y" | "N"; FF?: "Y" | "N"; NA?: "Y" | "N";
+  StartDate: string; StartTime?: string; StartTimeAndNotes?: string; Notes?: string;
+  AuditoriumName?: string; URL?: string; IsOpenForSale?: boolean;
+  Sections?: ActOneSection[];
+}
+interface ActOneEvent {
+  ID: number; Title: string; TypeDescription?: string; RunningTime?: number | string;
+  ImageURL?: string; Director?: string; Year?: string | number; Country?: string;
+  URL?: string; Tags?: Array<{ Format?: string }>; Performances?: ActOnePerformance[];
 }
 
-const MONTHS: Record<string, number> = {
-  january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
-  july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
+const fetchOptions: RequestInit = {
+  headers: {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36",
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-GB,en;q=0.9",
+  },
+  redirect: "follow",
 };
 
-// Parse a date+time string like "July 19, 12:00 pm" → UTC Date.
-function parseActOneDateTime(
-  text: string,
-  nowLondon: Date
-): Date | null {
-  const m = text.trim().match(
-    /^([A-Za-z]+)\s+(\d{1,2}),\s+(\d{1,2}):(\d{2})\s*(am|pm)$/i
-  );
-  if (!m) return null;
-  const monthName = m[1].toLowerCase();
-  const month = MONTHS[monthName];
-  if (!month) return null;
-  const day = parseInt(m[2], 10);
-  const timeParts = parse12hTime(`${m[3]}:${m[4]} ${m[5]}`);
-  if (!timeParts) return null;
-  const year = inferYear(day, month, nowLondon);
-  return londonToUtc(year, month, day, timeParts.hour, timeParts.minute);
+function extractEvents(html: string): ActOneEvent[] {
+  const marker = html.indexOf("var Events");
+  if (marker < 0) throw new Error("ActOne page did not contain the structured Events feed");
+  const start = html.indexOf("{", marker);
+  const end = html.indexOf("</script>", start);
+  if (start < 0 || end < 0) throw new Error("ActOne Events feed boundaries were not found");
+  const parsed = JSON.parse(html.slice(start, end).trim().replace(/;$/, "")) as { Events?: ActOneEvent[] };
+  if (!Array.isArray(parsed.Events)) throw new Error("ActOne Events feed had an unexpected shape");
+  return parsed.Events;
 }
 
-// Extract the Movie title from schema.org JSON-LD or the page <h1>.
-function extractTitle(html: string): string | null {
-  // Try schema.org Movie JSON-LD first.
-  const ldRegex =
-    /<script[^>]*type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/g;
-  let ldMatch: RegExpExecArray | null;
-  while ((ldMatch = ldRegex.exec(html)) !== null) {
-    try {
-      const data = JSON.parse(ldMatch[1]);
-      const items = Array.isArray(data) ? data : [data];
-      for (const item of items) {
-        if (item && item["@type"] === "Movie" && item.name) {
-          return decodeEntities(item.name);
-        }
+function parseStart(performance: ActOnePerformance): Date | null {
+  const date = performance.StartDate?.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const time = (performance.StartTime || performance.StartTimeAndNotes || "").match(/^(\d{2}):?(\d{2})/);
+  if (!date || !time) return null;
+  const hour = Number(time[1]), minute = Number(time[2]);
+  if (hour > 23 || minute > 59) return null;
+  return londonToUtc(Number(date[1]), Number(date[2]), Number(date[3]), hour, minute);
+}
+
+function absoluteUrl(value: string | null | undefined): string | null {
+  if (!value?.trim()) return null;
+  return new URL(decodeEntities(value.trim()), HOME_URL).href;
+}
+
+function cleanFilmTitleHint(title: string, type: string): string | null {
+  if (type !== "Film" && type !== "Special Events") return null;
+  const hint = title
+    .replace(/^(?:SEND FRIENDLY|CARERS?\s*(?:&|AND)\s*BABIES|CLASSICONE CINEMA CLUB)\s*:\s*/i, "")
+    .replace(/\s*\+\s*(?:LIVE\s+|DIRECTOR\s+)?Q\s*(?:&|\+)\s*A\s*$/i, "")
+    .replace(/\s*\+\s*(?:PANEL\s+)?DISCUSSION\s*$/i, "")
+    .trim();
+  if (!hint || /^HKFFUK\b/i.test(hint) || /\bIN CONVERSATION\b/i.test(hint)) return null;
+  return hint === title && type !== "Film" ? null : hint;
+}
+
+function yes(value: unknown): boolean { return value === "Y" || value === true }
+
+function labelsFor(performance: ActOnePerformance): string[] {
+  const labels: string[] = [];
+  const mappings: Array<[keyof ActOnePerformance, string]> = [
+    ["CC", "Captions"], ["AD", "Audio Described"], ["SF", "SEND Friendly"],
+    ["C1", "ClassicOne Cinema"], ["CB", "Carers & Babies"], ["SB", "Subtitled"],
+    ["DB", "Dubbed"], ["QA", "Q+A"], ["ES", "EOS"], ["RR", "Rerelease"],
+    ["RS", "Restoration"], ["FP", "Footprints"], ["FF", "Family Friendly"],
+    ["NA", "No Ads/Trailers"],
+  ];
+  for (const [key, label] of mappings) if (yes(performance[key])) labels.push(label);
+  if (performance.Notes?.trim()) labels.push(decodeEntities(performance.Notes.trim()));
+  return labels;
+}
+
+function buildRecords(events: ActOneEvent[], nowUtc: Date) {
+  const records: ScreeningRecord[] = [], excludedEvents: string[] = [], parseErrors: string[] = [];
+  for (const event of events) {
+    const title = decodeEntities(event.Title || "").replace(/\s+/g, " ").trim();
+    const type = decodeEntities(event.TypeDescription || "").trim();
+    if (!title || NON_SCREEN_TYPES.has(type)) {
+      if (title) excludedEvents.push(title);
+      continue;
+    }
+    const eventUrl = absoluteUrl(event.URL);
+    const artworkUrl = absoluteUrl(event.ImageURL);
+    const explicitFormats = compactStrings((event.Tags || []).map((tag) => tag.Format));
+    const sourceDirectors = compactStrings([event.Director]);
+    const sourceCountries = compactStrings((event.Country || "").split(/\s*(?:,|\/|;)\s*/));
+
+    for (const performance of event.Performances || []) {
+      if (!Number.isSafeInteger(performance.ID) || performance.ID <= 0) {
+        throw new Error('Missing or invalid performance ID; database left untouched');
       }
-    } catch {
-      // ignore parse errors
+      const start = parseStart(performance);
+      if (!start) {
+        parseErrors.push(`${event.ID}/${performance.ID}: invalid date or time`);
+        continue;
+      }
+      if (start.getTime() <= nowUtc.getTime()) continue;
+      const soldOut = yes(performance.IsSoldOut);
+      const bookingUrl = absoluteUrl(performance.URL);
+      const openForSale = typeof performance.IsOpenForSale === "boolean"
+        ? performance.IsOpenForSale
+        : performance.Sections?.some((section) => yes(section.IsOpenForSale)) ?? null;
+      const labels = labelsFor(performance);
+      const projectionFormats = normaliseProjectionFormats([...explicitFormats, ...labels]);
+      const accessibilityFeatures = [];
+      if (yes(performance.CC)) accessibilityFeatures.push("captioned" as const);
+      if (yes(performance.AD)) accessibilityFeatures.push("audio_described" as const);
+
+      records.push({
+        cinema_name: CINEMA_NAME,
+        movie_title: title,
+        start_time: start.toISOString(),
+        booking_url: bookingUrl || eventUrl,
+        format: explicitFormats.length ? explicitFormats.join(", ") : null,
+        sold_out: soldOut,
+        projection_formats: projectionFormats,
+        accessibility_features: accessibilityFeatures,
+        programme_types: yes(performance.CB) ? ["parent_and_baby"] : [],
+        availability_status: availabilityFromSignals({ soldOut, openForSale, hasBookingUrl: Boolean(bookingUrl) }),
+        film_title_hint: cleanFilmTitleHint(title, type),
+        source_release_year: parseExplicitYear(event.Year),
+        source_runtime_minutes: parseRuntimeMinutes(event.RunningTime),
+        source_directors: sourceDirectors,
+        source_countries: sourceCountries,
+        source_event_url: eventUrl,
+        screen_name: performance.AuditoriumName?.trim() || null,
+        screening_label: labels.length ? labels.join(", ") : null,
+        screening_tags: normaliseScreeningTags(labels),
+        verified_artwork_url: artworkUrl,
+        source_reference: `${SOURCE_PREFIX}:${performance.ID}`,
+        last_seen_at: nowUtc.toISOString(),
+      });
     }
   }
-  // Fallback: first <h1> after the hero / before Showtimes.
-  const h1Match = html.match(/<h1[^>]*>([\s\S]*?)<\/h1>/);
-  if (h1Match) {
-    const t = stripTags(h1Match[1]);
-    if (t && t.toLowerCase() !== "showtimes") return t;
-  }
-  return null;
+  return { records, excludedEvents, parseErrors };
 }
 
-// Parse the Showtimes section of a film page.
-function parseShowtimes(
-  html: string,
-  nowLondon: Date
-): ParsedScreening[] {
-  const results: ParsedScreening[] = [];
-  const title = extractTitle(html);
-  if (!title) return results;
-
-  // Find the Showtimes section.
-  const showtimesIdx = html.indexOf("<h1>Showtimes</h1>");
-  if (showtimesIdx === -1) return results;
-  const section = html.slice(showtimesIdx);
-
-  // Each showtime is <h2><a href=".../checkout/showing/{slug}/{id}">{date time}</a></h2>
-  const showtimeRegex =
-    /<a[^>]*href="([^"]*\/checkout\/showing\/[a-z0-9-]+\/(\d+))"[^>]*>([^<]+)<\/a>/gi;
-  let m: RegExpExecArray | null;
-  while ((m = showtimeRegex.exec(section)) !== null) {
-    const bookingUrl = m[1];
-    const bookingId = m[2];
-    const dateTimeText = stripTags(m[3]);
-    const utc = parseActOneDateTime(dateTimeText, nowLondon);
-    results.push({
-      movie_title: title,
-      start_time_iso: utc ? utc.toISOString() : null,
-      booking_url: bookingUrl,
-      booking_id: bookingId,
-      source_reference: `${SOURCE_PREFIX}:${bookingId}`,
-      parse_error: utc ? undefined : `Unparseable datetime: "${dateTimeText}"`,
-    });
-  }
-
-  return results;
-}
-
-// Discover all unique movie slugs from the whats-on page. Links appear as
-// either relative ("/movie/{slug}") or absolute ("https://.../movie/{slug}").
-function discoverMovieSlugs(html: string): string[] {
-  const slugs = new Set<string>();
-  const regex = /\/movie\/([a-z0-9-]+)\/?/gi;
-  let m: RegExpExecArray | null;
-  while ((m = regex.exec(html)) !== null) {
-    slugs.add(m[1]);
-  }
-  return Array.from(slugs);
+async function previousActiveCount(ctx: ImportRunContext, nowUtc: Date): Promise<number> {
+  const { count, error } = await ctx.supabase.from("screenings")
+    .select("id", { count: "exact", head: true }).eq("cinema_name", CINEMA_NAME)
+    .eq("active", true).gt("start_time", nowUtc.toISOString());
+  if (error) throw new Error(`Could not count existing ActOne rows: ${error.message}`);
+  return count || 0;
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 200, headers: corsHeaders });
-  }
-
+  if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
   const startedAt = new Date();
-  const startedIso = startedAt.toISOString();
-  console.log(`[import-actone-cinema] starting at ${startedIso}`);
+  const supabaseUrl = Deno.env.get("SUPABASE_URL"), serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) return jsonResponse({ success: false, error: "Missing Supabase credentials." }, 500);
+  const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
+  const ctx: ImportRunContext = { supabase, cinemaName: CINEMA_NAME, minScreenings: MIN_SCREENINGS, startedAt };
+  const run = await startRun(ctx);
+  if (run.blocked) return jsonResponse({ success: false, blocked: true, error: "Another ActOne import is running." }, 409);
+  if (run.error || !run.runId) return jsonResponse({ success: false, error: run.error || "Could not start run." }, 500);
 
-  const supabaseUrl = Deno.env.get("SUPABASE_URL");
-  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!supabaseUrl || !serviceRoleKey) {
-    return jsonResponse(
-      { success: false, error: "Missing Supabase credentials." },
-      500
-    );
-  }
-
-  const supabase = createClient(supabaseUrl, serviceRoleKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-
-  const ctx: ImportRunContext = {
-    supabase,
-    cinemaName: CINEMA_NAME,
-    minScreenings: MIN_SCREENINGS,
-    startedAt,
-  };
-
-  // Prevent overlapping runs.
-  const runStart = await startRun(ctx);
-  if (runStart.blocked) {
-    return jsonResponse(
-      {
-        success: false,
-        error: "Another import is already running for ActOne Cinema.",
-        blocked: true,
-      },
-      409
-    );
-  }
-  if (runStart.error || !runStart.runId) {
-    return jsonResponse(
-      { success: false, error: runStart.error ?? "Could not start run." },
-      500
-    );
-  }
-  const runId = runStart.runId;
-
-  const fetchOpts = {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "Accept-Language": "en-GB,en;q=0.9",
-    },
-    redirect: "follow" as const,
-  };
-
-  // 1. Fetch the whats-on page.
-  let whatsOnHtml: string;
   try {
-    const resp = await fetch(WHATS_ON_URL, fetchOpts);
-    if (!resp.ok) {
-      const msg = `Failed to fetch whats-on: HTTP ${resp.status} ${resp.statusText}`;
-      await endRun(ctx, runId, "failed", 0, 0, msg);
-      return jsonResponse({ success: false, error: msg }, 502);
-    }
-    whatsOnHtml = await resp.text();
-    console.log(`[import-actone-cinema] whats-on fetched ${whatsOnHtml.length} bytes`);
-  } catch (err) {
-    const msg = `Network error fetching whats-on: ${err instanceof Error ? err.message : String(err)}`;
-    await endRun(ctx, runId, "failed", 0, 0, msg);
-    return jsonResponse({ success: false, error: msg }, 502);
-  }
-
-  // 2. Discover all unique movie slugs.
-  const slugs = discoverMovieSlugs(whatsOnHtml);
-  console.log(`[import-actone-cinema] discovered ${slugs.length} movie slugs`);
-  if (slugs.length === 0) {
-    const msg = "No movie slugs found on whats-on page.";
-    await endRun(ctx, runId, "failed", 0, 0, msg);
-    return jsonResponse({ success: false, error: msg }, 502);
-  }
-
-  // Current Europe/London time for year inference.
-  const nowUtc = new Date();
-  const offsetMin = londonOffsetMinutes(nowUtc);
-  const nowLondon = new Date(nowUtc.getTime() + offsetMin * 60 * 1000);
-
-  // 3-5. Fetch each film page and parse showtimes.
-  const allParsed: ParsedScreening[] = [];
-  const parseErrors: string[] = [];
-  let filmsProcessed = 0;
-  let fetchFailures = 0;
-
-  for (const slug of slugs) {
-    const filmUrl = `${BASE_URL}/movie/${slug}/`;
-    let filmHtml: string;
-    try {
-      const resp = await fetch(filmUrl, fetchOpts);
-      if (!resp.ok) {
-        console.warn(
-          `[import-actone-cinema] film page ${slug} HTTP ${resp.status}`
-        );
-        fetchFailures++;
-        continue;
+    const response = await fetch(HOME_URL, { ...fetchOptions, signal: AbortSignal.timeout(30000) });
+    if (!response.ok) throw new Error(`ActOne returned HTTP ${response.status}`);
+    const events = extractEvents(await response.text());
+    const nowUtc = new Date();
+    const parsed = buildRecords(events, nowUtc);
+    if (parsed.parseErrors.length) throw new Error(`Incomplete programme: ${parsed.parseErrors.join('; ')}`);
+    const seen = new Map<string, ScreeningRecord>();
+    for (const record of parsed.records) {
+      const previous = seen.get(record.source_reference);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(record)) {
+        throw new Error(`Conflicting performance: ${record.source_reference}`);
       }
-      filmHtml = await resp.text();
-      filmsProcessed++;
-    } catch (err) {
-      console.warn(`[import-actone-cinema] film page ${slug} error:`, err);
-      fetchFailures++;
-      continue;
+      seen.set(record.source_reference, record);
     }
-
-    const parsed = parseShowtimes(filmHtml, nowLondon);
-    for (const p of parsed) {
-      if (p.parse_error) parseErrors.push(`${slug}: ${p.parse_error}`);
-      allParsed.push(p);
+    const records = Array.from(new Map(parsed.records.map((record) => [record.source_reference, record])).values());
+    if (records.length < MIN_SCREENINGS) throw new Error(`Unusually low screening count (${records.length}); database left untouched`);
+    const previous = await previousActiveCount(ctx, nowUtc);
+    if (previous >= MIN_SCREENINGS && records.length < Math.floor(previous * MIN_EXPECTED_RATIO)) {
+      throw new Error(`Screening count dropped from ${previous} to ${records.length}; database left untouched`);
     }
-    // Be gentle.
-    await new Promise((r) => setTimeout(r, 50));
+    const { saved, errors } = await commitImport(ctx, records, nowUtc);
+    if (errors.length) throw new Error(`Import errors: ${errors.join("; ")}`);
+    await endRun(ctx, run.runId, "success", records.length, saved);
+    return jsonResponse({
+      success: true, cinema: CINEMA_NAME, events_found: events.length,
+      screenings_found: records.length, screenings_saved: saved, previous_active: previous,
+      excluded_non_screen_events: parsed.excludedEvents, parse_errors: parsed.parseErrors.slice(0, 10),
+      examples: records.slice(0, 5),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await endRun(ctx, run.runId, "failed", 0, 0, message);
+    return jsonResponse({ success: false, cinema: CINEMA_NAME, error: message }, 500);
   }
-
-  console.log(
-    `[import-actone-cinema] processed ${filmsProcessed}/${slugs.length} films, ${allParsed.length} screenings, ${fetchFailures} fetch failures`
-  );
-
-  // Safety: if too many film pages failed to fetch, the crawl is incomplete.
-  // Don't deactivate existing screenings in that case.
-  if (fetchFailures > slugs.length * 0.5) {
-    const msg = `Too many film page fetch failures (${fetchFailures}/${slugs.length}). Crawl incomplete; database left untouched.`;
-    await endRun(ctx, runId, "failed", allParsed.length, 0, msg);
-    return jsonResponse(
-      {
-        success: false,
-        error: msg,
-        screenings_found: allParsed.length,
-        films_processed: filmsProcessed,
-        fetch_failures: fetchFailures,
-      },
-      502
-    );
-  }
-
-  if (allParsed.length < MIN_SCREENINGS) {
-    const msg = `Unusually low screening count (${allParsed.length}). Database left untouched.`;
-    await endRun(ctx, runId, "failed", allParsed.length, 0, msg);
-    return jsonResponse(
-      { success: false, error: msg, screenings_found: allParsed.length },
-      500
-    );
-  }
-
-  // 6. Filter out past screenings.
-  const upcoming = allParsed.filter(
-    (p) => p.start_time_iso !== null && new Date(p.start_time_iso).getTime() > nowUtc.getTime()
-  );
-  const skippedPast = allParsed.length - upcoming.length;
-  console.log(
-    `[import-actone-cinema] ${upcoming.length} upcoming, ${skippedPast} past skipped`
-  );
-
-  // Build records.
-  const records: ScreeningRecord[] = upcoming
-    .filter((p) => p.start_time_iso !== null)
-    .map((p) => ({
-      cinema_name: CINEMA_NAME,
-      movie_title: p.movie_title,
-      start_time: p.start_time_iso as string,
-      booking_url: p.booking_url,
-      format: null,
-      sold_out: false,
-      source_reference: p.source_reference,
-      last_seen_at: new Date().toISOString(),
-    }));
-
-  const { saved, errors } = await commitImport(ctx, records, nowUtc);
-  if (errors.length > 0) {
-    const msg = `Import errors: ${errors.join("; ")}`;
-    await endRun(ctx, runId, "failed", allParsed.length, saved, msg);
-    return jsonResponse(
-      {
-        success: false,
-        error: msg,
-        screenings_found: allParsed.length,
-        screenings_saved: saved,
-      },
-      500
-    );
-  }
-
-  await endRun(ctx, runId, "success", allParsed.length, saved);
-  console.log(
-    `[import-actone-cinema] done: found=${allParsed.length} saved=${saved}`
-  );
-
-  return jsonResponse({
-    success: true,
-    cinema: CINEMA_NAME,
-    films_discovered: slugs.length,
-    films_processed: filmsProcessed,
-    fetch_failures: fetchFailures,
-    screenings_found: allParsed.length,
-    screenings_saved: saved,
-    skipped_past: skippedPast,
-    parse_errors: parseErrors.slice(0, 10),
-    import_started_at: startedIso,
-    import_completed_at: new Date().toISOString(),
-    examples: upcoming.slice(0, 5).map((p) => ({
-      movie_title: p.movie_title,
-      start_time: p.start_time_iso,
-      source_reference: p.source_reference,
-      booking_url: p.booking_url,
-      booking_id: p.booking_id,
-    })),
-  });
 });

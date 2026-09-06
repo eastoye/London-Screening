@@ -7,6 +7,7 @@ import type {
   AvailabilityStatus,
   ProgrammeType,
   ProjectionFormat,
+  ScreeningTag,
 } from "./screeningMetadata.ts";
 
 export const corsHeaders = {
@@ -108,6 +109,16 @@ export interface ScreeningRecord {
   accessibility_features?: AccessibilityFeature[];
   programme_types?: ProgrammeType[];
   availability_status?: AvailabilityStatus;
+  film_title_hint?: string | null;
+  source_release_year?: number | null;
+  source_runtime_minutes?: number | null;
+  source_directors?: string[];
+  source_countries?: string[];
+  source_event_url?: string | null;
+  screen_name?: string | null;
+  screening_label?: string | null;
+  screening_tags?: ScreeningTag[];
+  verified_artwork_url?: string | null;
   source_reference: string;
   last_seen_at: string;
   active?: boolean;
@@ -128,6 +139,21 @@ export async function startRun(
   ctx: ImportRunContext
 ): Promise<{ runId: string | null; blocked: boolean; error?: string }> {
   const { supabase, cinemaName, startedAt } = ctx;
+  const staleBefore = new Date(startedAt.getTime() - 30 * 60 * 1000).toISOString();
+  const { error: staleError } = await supabase
+    .from("import_runs")
+    .update({
+      status: "failed",
+      completed_at: startedAt.toISOString(),
+      error_message: "Automatically failed after remaining in running state for more than 30 minutes.",
+    })
+    .eq("cinema_name", cinemaName)
+    .eq("status", "running")
+    .lt("started_at", staleBefore);
+  if (staleError) {
+    return { runId: null, blocked: false, error: `Could not recover stale run: ${staleError.message}` };
+  }
+
   const { data, error } = await supabase
     .from("import_runs")
     .insert({
