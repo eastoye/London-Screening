@@ -1,3 +1,4 @@
+import {filmCatalogue,lumiereLabels,enrichLumiere} from './metadata.ts';
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import {
@@ -20,6 +21,8 @@ const SOURCE_PREFIX = "cinelumiere";
 const MIN_SCREENINGS = 3;
 
 interface ParsedScreening {
+  screening_tags?:ScreeningRecord['screening_tags'];
+  projection_formats?:ScreeningRecord['projection_formats'];
   screening_label?:string|null;
   accessibility_features?:Array<'relaxed'>;
   source_event_url?:string;
@@ -98,7 +101,8 @@ async function repairDateOverrides(html:string):Promise<string>{
     const time=match[2].match(/>(\d{1,2}:\d{2})<\/a>/)?.[1];
     if(time!==String(local.getUTCHours()).padStart(2,'0')+':'+String(local.getUTCMinutes()).padStart(2,'0'))throw new Error('Savoy numeric date/time disagreement');
     const date=local.toLocaleDateString('en-GB',{timeZone:'UTC',weekday:'long',day:'numeric',month:'short',year:'numeric'}).replace(',','');
-    repairs.set(match[0],match[0].replace(match[1],date));
+    const explicitLabel=/^Relaxed Screening$/i.test(match[1].trim())?'<span class="PerformanceNotesSmall">(Relaxed Screening)</span>':'';
+    repairs.set(match[0],match[0].replace(match[1],date).replace('</td></tr>',explicitLabel+'</td></tr>'));
   }
   for(const [before,after] of repairs)html=html.replace(before,after);
   return html;
@@ -106,16 +110,16 @@ async function repairDateOverrides(html:string):Promise<string>{
 
 function parseCineLumiere(html: string): ParsedScreening[] {
   const results: ParsedScreening[] = [];
-  let expected=0;
+  const expected=[...html.matchAll(/href="[^"]*TcsPerformance_\d+[^"]*"/g)].length;
 
   // Split into programme blocks by the subtitle heading.
   const blockRegex =
-    /<h2 class="subtitle first"><a href="[^"]*TcsProgramme_(\d+)"[^>]*>([\s\S]*?)<\/a>\s*\(([^)]*)\)<\/h2>\s*<div class="eightcol showtimes last">([\s\S]*?)(?=<h2 class="subtitle first"|<div class="clearfix"><\/div><div class="programmetype|<div class="footer|$)/g;
+    /<h2 class="subtitle first"><a href="[^"]*TcsProgramme_(\d+)"[^>]*>([\s\S]*?)<\/a>\s*(?:\(([^)]*)\))?<\/h2>\s*<div class="eightcol showtimes last">([\s\S]*?)(?=<div class="programmetype|<div class="footer|$)/g;
   let blockMatch: RegExpExecArray | null;
   while ((blockMatch = blockRegex.exec(html)) !== null) {
     const progId = blockMatch[1];
     const rawTitle = blockMatch[2];
-    const cert = blockMatch[3].trim();
+    const cert = (blockMatch[3]||'').trim();
     const eventUrl=html.match(new RegExp('href="([^"]*TcsProgramme_'+progId+')"'))?.[1];
     const showtimesBody = blockMatch[4];
 
@@ -123,7 +127,6 @@ function parseCineLumiere(html: string): ParsedScreening[] {
     if (!movieTitle) continue;
     // Explicit non-film products in the same Savoy catalogue.
     if(movieTitle==='Language Activity'||movieTitle==='Stop Motion Animation Workshop')continue;
-    expected += [...showtimesBody.matchAll(/href="[^"]*TcsPerformance_\d+[^"]*"/g)].length;
 
     // Each row: <td class="PeformanceListDate">Date</td> ... <td class="PeformanceListTimes">...<a href="...TcsPerformance_{id}...">Time</a>...</td>
     // A date may have multiple times following it.
@@ -160,6 +163,11 @@ function parseCineLumiere(html: string): ParsedScreening[] {
         const bookingUrl = perfMatch[1];
         const performanceId = perfMatch[2];
         const timeText = perfMatch[3].trim();
+        const next=timesBody.indexOf('<a class="Button"',perfMatch.index+1);
+        const performanceBody=timesBody.slice(perfMatch.index,next<0?undefined:next);
+        const notes=decodeEntities(stripTags(performanceBody.match(/class="PerformanceNotesSmall">([\s\S]*?)<\/span>/)?.[1]||''));
+        const status=decodeEntities(stripTags(performanceBody.match(/class="PerformanceStatusSmall">([\s\S]*?)<\/span>/)?.[1]||''));
+        const soldOut=/\bsold out\b/i.test(status);
 
         const timeParts = parse24hTime(timeText);
         if (!timeParts) {
@@ -186,14 +194,12 @@ function parseCineLumiere(html: string): ParsedScreening[] {
 
         results.push({
           movie_title: movieTitle,
-          source_event_url:eventUrl,availability_status:"available",
-          screening_label:stripTags(timesBody.match(/class="PerformanceNotesSmall">([\s\S]*?)<\/span>/)?.[1]||'')||null,
-          accessibility_features:/class="PerformanceNotesSmall">\s*\(Relaxed Screening\)/.test(timesBody)?['relaxed']:[],
+          source_event_url:eventUrl,availability_status:soldOut?'sold_out':status?'unknown':'available',
+          ...lumiereLabels(movieTitle,notes),
           start_time_iso: utc.toISOString(),
           booking_url: bookingUrl,
           performance_id: performanceId,
-          format: null,
-          sold_out: false,
+          sold_out: soldOut,
           source_reference: `${SOURCE_PREFIX}:${performanceId}`,
         });
       }
@@ -226,7 +232,7 @@ function parseCineLumiere(html: string): ParsedScreening[] {
               start_time_iso: utc.toISOString(),
               booking_url: "",
               performance_id: fallbackId,
-              format: null,
+              ...lumiereLabels(movieTitle,decodeEntities(stripTags(timesBody.match(/class="PerformanceNotesSmall">([\s\S]*?)<\/span>/)?.[1]||''))),
               sold_out: closed,
               source_reference: `${SOURCE_PREFIX}:${fallbackId}`,
             });
@@ -286,24 +292,26 @@ Deno.serve(async (req: Request) => {
   }
   const runId = runStart.runId;
 
-  let html: string;
+  let html: string | null = null;
   try {
-    const resp = await fetch(CINELUMIERE_URL, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-GB,en;q=0.9",
-      },
-      redirect: "follow",
-      signal:AbortSignal.timeout(20000),
-    });
-    if (!resp.ok) {
-      const msg = `Failed to fetch programme: HTTP ${resp.status} ${resp.statusText}`;
-      await endRun(ctx, runId, "failed", 0, 0, msg);
-      return jsonResponse({ success: false, error: msg }, 502);
+    let lastError='';
+    for(let attempt=1;attempt<=2&&!html;attempt++){
+      try{
+        const resp = await fetch(CINELUMIERE_URL, {
+          headers: {
+            "User-Agent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+            Accept:"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language":"en-GB,en;q=0.9",
+          },redirect:"follow",signal:AbortSignal.timeout(20000),
+        });
+        if(!resp.ok)throw new Error(`HTTP ${resp.status} ${resp.statusText}`);
+        html=await resp.text();
+      }catch(err){
+        lastError=err instanceof Error?err.message:String(err);
+        if(attempt<2)await new Promise(resolve=>setTimeout(resolve,500));
+      }
     }
-    html = await resp.text();
+    if(!html)throw new Error(lastError||'empty response');
     console.log(`[import-cine-lumiere] fetched ${html.length} bytes`);
   } catch (err) {
     const msg = `Network error: ${err instanceof Error ? err.message : String(err)}`;
@@ -314,7 +322,7 @@ Deno.serve(async (req: Request) => {
   let parsed: ParsedScreening[] = [];
   let parseErrors: string[] = [];
   try {
-    parsed = parseCineLumiere(await repairDateOverrides(html));
+    parsed = parseCineLumiere(await repairDateOverrides(filmCatalogue(html as string)));
     parseErrors = parsed.filter((p) => p.parse_error).map((p) => p.parse_error as string);
     console.log(`[import-cine-lumiere] parsed ${parsed.length} screenings, ${parseErrors.length} errors`);
   } catch (err) {
@@ -345,9 +353,12 @@ Deno.serve(async (req: Request) => {
   const records: ScreeningRecord[] = upcoming
     .filter((p) => p.start_time_iso !== null && p.source_reference)
     .map((p) => ({
+      film_title_hint:null,source_release_year:null,source_runtime_minutes:null,
+      source_directors:[],source_countries:[],verified_artwork_url:null,
       source_event_url:p.source_event_url,
       screening_label:p.screening_label??null,accessibility_features:p.accessibility_features??[],
-      availability_status:p.sold_out?"sold_out":p.booking_url?"available":"unknown",
+      screening_tags:p.screening_tags??[],projection_formats:p.projection_formats??[],
+      availability_status:p.availability_status??"unknown",
       cinema_name: CINEMA_NAME,
       movie_title: p.movie_title,
       start_time: p.start_time_iso as string,
@@ -358,6 +369,26 @@ Deno.serve(async (req: Request) => {
       last_seen_at: new Date().toISOString(),
     }));
 
+  // Preserve previously verified optional detail metadata if the editorial site
+  // is temporarily incomplete. Core times still come from the Savoy source.
+  const previousMetadata=new Map<string,Partial<ScreeningRecord>>();
+  for(let offset=0;offset<records.length;offset+=100){
+    const refs=records.slice(offset,offset+100).map(r=>r.source_reference);
+    const {data,error}=await supabase.from('screenings').select('source_reference,film_title_hint,source_release_year,source_runtime_minutes,source_directors,source_countries,source_event_url,verified_artwork_url').eq('cinema_name',CINEMA_NAME).in('source_reference',refs);
+    if(error){
+      await endRun(ctx,runId,'failed',parsed.length,0,'Cannot preserve existing source metadata: '+error.message);
+      return jsonResponse({success:false,error:error.message},500);
+    }
+    for(const row of data||[])previousMetadata.set(row.source_reference,row);
+  }
+  for(const record of records){
+    const old=previousMetadata.get(record.source_reference);
+    if(old)Object.assign(record,old);
+  }
+  try { await enrichLumiere(records); }
+  catch(err){
+    console.warn('Optional Ciné Lumière detail enrichment skipped:',err instanceof Error?err.message:String(err));
+  }
   const { saved, errors } = await commitImport(ctx, records, nowUtc);
   if (errors.length > 0) {
     const msg = `Import errors: ${errors.join("; ")}`;

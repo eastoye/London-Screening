@@ -1,4 +1,4 @@
-import {movieMetadata} from "./metadata.ts";
+import {movieMetadata,enrichChiswick} from "./metadata.ts";
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import {
@@ -320,6 +320,8 @@ Deno.serve(async (req: Request) => {
   const records: ScreeningRecord[] = upcoming
     .filter((p) => p.start_time_iso !== null && p.source_reference)
     .map((p) => ({
+      projection_formats:[],accessibility_features:[],programme_types:[],screening_tags:[],
+      screening_label:null,screen_name:null,source_release_year:null,source_countries:[],
       ...p.metadata,
       availability_status: "unknown",
       cinema_name: CINEMA_NAME,
@@ -332,6 +334,12 @@ Deno.serve(async (req: Request) => {
       last_seen_at: new Date().toISOString(),
     }));
 
+  try { await enrichChiswick(records); }
+  catch(err){
+    const error=err instanceof Error?err.message:String(err);
+    await endRun(ctx,runId,"failed",parsed.length,0,error);
+    return jsonResponse({success:false,error},502);
+  }
   const { saved, errors } = await commitImport(ctx, records, nowUtc);
   if (errors.length > 0) {
     const msg = `Import errors: ${errors.join("; ")}`;
@@ -372,4 +380,3 @@ Deno.serve(async (req: Request) => {
     })),
   });
 });
-
