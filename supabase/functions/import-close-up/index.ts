@@ -23,7 +23,7 @@ interface ParsedScreening {
   performanceId:string; eventHash:string; movieTitle:string; startTime:string;
   bookingUrl:string|null; eventUrl:string; artworkUrl:string|null; soldOut:boolean;
   availabilityStatus:"available"|"sold_out"|"unknown"; filmTitleHint:string|null;
-  screeningLabel:string|null; screeningTags:Array<"introduction"|"double_bill">;
+  screeningLabel:string|null; screeningTags:Array<"introduction"|"q_and_a"|"double_bill">;
   sourceReleaseYear:number|null; sourceRuntimeMinutes:number|null; sourceDirectors:string[];
 }
 interface OfficialShow { title:string; startTime:string; eventUrl:string }
@@ -65,7 +65,17 @@ function titleMetadata(title:string):Pick<ParsedScreening,"filmTitleHint"|"scree
     tags.push("introduction");
     if(!strand)hint=title.replace(/\s*[-–—:]?\s*introduced by\b[\s\S]*$/i,"").trim()||null;
   }
-  if(/\s\+\s/.test(title)){labels.push("Double bill");tags.push("double_bill");hint=null}
+  const eventSuffix=title.match(/\s+\+\s+((?:Q\s*&\s*A|Intro(?:duction)?)\b[\s\S]*)$/i);
+  let billTitle=title;
+  if(eventSuffix){
+    const eventLabel=eventSuffix[1].trim();
+    billTitle=title.slice(0,eventSuffix.index).trim();
+    labels.push(eventLabel);
+    if(/^Q\s*&\s*A\b/i.test(eventLabel))tags.push("q_and_a");
+    else tags.push("introduction");
+    if(!strand)hint=billTitle||null;
+  }
+  if(/\s\+\s/.test(billTitle)){labels.push("Double bill");tags.push("double_bill");hint=null}
   if(/^One Minute Volume\b/i.test(title))hint=null;
   return {filmTitleHint:hint,screeningLabel:labels.join("; ")||null,screeningTags:[...new Set(tags)]};
 }
