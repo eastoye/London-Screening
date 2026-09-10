@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import CinemaMultiSelect from "./CinemaMultiSelect.jsx";
 import DateTimeFilter from "./DateTimeFilter.jsx";
+import DistanceFilter from "./DistanceFilter.jsx";
 import FiltersDropdown from "./FiltersDropdown.jsx";
 import WatchDataModal from "./WatchDataModal.jsx";
 import MovieImportModal from "./MovieImportModal.jsx";
@@ -9,7 +10,10 @@ import {
   createDateTimeMatcher,
   isDefaultDateTimeFilter,
 } from "./dateTimeFilter.js";
-import { fetchAllUpcomingScreenings } from "./screeningsApi.js";
+import {
+  fetchAllUpcomingScreenings,
+  fetchCinemaLocations,
+} from "./screeningsApi.js";
 import { SUPABASE_CONFIGURED } from "./supabaseClient.js";
 import { londonDateKey } from "./time.js";
 import { DayGroup } from "./ScreeningRow.jsx";
@@ -20,6 +24,12 @@ import {
   countScreeningFilters,
   screeningMatchesMetadataFilters,
 } from "./screeningFilters.js";
+import {
+  DEFAULT_DISTANCE_FILTER,
+  buildCinemaDistanceData,
+  distanceIncludesCinema,
+  isDistanceFilterActive,
+} from "./distanceFilter.js";
 
 export default function App() {
   const [screenings, setScreenings] = useState([]);
@@ -29,6 +39,12 @@ export default function App() {
   const [watchDataModalOpen, setWatchDataModalOpen] = useState(false);
   const [movieImportModalOpen, setMovieImportModalOpen] = useState(false);
   const [resultsView, setResultsView] = useState("time");
+  const [cinemaLocations, setCinemaLocations] = useState([]);
+  const [cinemaLocationsStatus, setCinemaLocationsStatus] = useState("loading");
+  const [cinemaLocationsError, setCinemaLocationsError] = useState("");
+  const [distanceFilter, setDistanceFilter] = useState(() => ({
+    ...DEFAULT_DISTANCE_FILTER,
+  }));
 
   const [cinemaSelection, setCinemaSelection] = useState({
     mode: "all",
@@ -97,6 +113,27 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const rows = await fetchCinemaLocations();
+        if (cancelled) return;
+        setCinemaLocations(rows);
+        setCinemaLocationsStatus("ready");
+      } catch (err) {
+        if (cancelled) return;
+        setCinemaLocationsError(err instanceof Error ? err.message : String(err));
+        setCinemaLocationsStatus("error");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!trakt.isConnected) {
       setMinRating(0);
       setScreeningFilters((current) => ({
@@ -150,6 +187,11 @@ export default function App() {
     cinemas.length > 0 && selectedCinemaCount === 0;
 
   const dateTimeFilterActive = !isDefaultDateTimeFilter(dateTimeFilter);
+  const distanceFilterActive = isDistanceFilterActive(distanceFilter);
+  const distanceData = useMemo(
+    () => buildCinemaDistanceData(distanceFilter.origin, cinemas, cinemaLocations),
+    [distanceFilter.origin, cinemas, cinemaLocations]
+  );
 
   const handleToggleCinema = (cinemaName) => {
     setCinemaSelection((currentSelection) => {
@@ -259,6 +301,16 @@ export default function App() {
         return false;
       }
 
+      if (
+        distanceFilterActive &&
+        !distanceIncludesCinema(
+          distanceData.distanceByCinema.get(screening.cinema_name),
+          distanceFilter.maxMiles
+        )
+      ) {
+        return false;
+      }
+
       if (!matchesDateTime(screening.start_time)) {
         return false;
       }
@@ -296,6 +348,9 @@ export default function App() {
     screenings,
     search,
     selectedCinemas,
+    distanceFilterActive,
+    distanceData,
+    distanceFilter.maxMiles,
     matchesDateTime,
     screeningFilters,
     minRating,
@@ -357,6 +412,7 @@ export default function App() {
     allCinemasSelected &&
     search.trim() === "" &&
     !dateTimeFilterActive &&
+    !distanceFilterActive &&
     minRating === 0 &&
     countScreeningFilters(screeningFilters) === 0
   ) {
@@ -473,6 +529,16 @@ export default function App() {
           onToggleCinema={handleToggleCinema}
           onSelectAll={handleSelectAllCinemas}
           onClearAll={handleClearAllCinemas}
+          disabled={status !== "ready" || cinemas.length === 0}
+        />
+
+        <DistanceFilter
+          value={distanceFilter}
+          onApply={setDistanceFilter}
+          cinemas={cinemas}
+          cinemaLocations={cinemaLocations}
+          locationsStatus={cinemaLocationsStatus}
+          locationsError={cinemaLocationsError}
           disabled={status !== "ready" || cinemas.length === 0}
         />
 

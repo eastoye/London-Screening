@@ -42,3 +42,26 @@ export async function fetchAllUpcomingScreenings() {
 
   return all;
 }
+
+// Cinema coordinates are stored once and fetched with the screening data.
+// The user's chosen location is never sent to Supabase.
+export async function fetchCinemaLocations() {
+  if (!SUPABASE_CONFIGURED) {
+    throw new Error(
+      "Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY."
+    );
+  }
+
+  const { data, error } = await supabase
+    .from("cinemas")
+    .select("name, latitude, longitude")
+    .order("name", { ascending: true });
+
+  if (error) {
+    throw new Error(
+      `Cinema location query failed: ${error.message} (code ${error.code ?? "?"})`
+    );
+  }
+
+  return data ?? [];
+}
