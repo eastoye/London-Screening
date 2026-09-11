@@ -10,285 +10,217 @@ import {
   type ScreeningRecord,
   type ImportRunContext,
 } from "../_shared/importSafety.ts";
+import {
+  buildSourceMetadata,
+  type ElectricFilm,
+  type ElectricScreening,
+  type ElectricScreeningType,
+} from "./metadata.ts";
 
 const DATA_URL = "https://www.electriccinema.co.uk/data/data.json";
 const BASE_URL = "https://www.electriccinema.co.uk";
+const LOCK_NAME = "Electric Cinemas";
 const MIN_SCREENINGS = 3;
+const MAX_COUNT_DROP_RATIO = 0.5;
+const REQUEST_TIMEOUT_MS = 15_000;
 
-// Cinema IDs in the JSON data:
-//   603 → Portobello
-//   602 → White City
 const CINEMA_MAP: Record<string, string> = {
   "603": "Electric Cinema Portobello",
   "602": "Electric Cinema White City",
 };
+
 const SOURCE_PREFIX_MAP: Record<string, string> = {
   "603": "electric:portobello",
   "602": "electric:white-city",
 };
 
-interface ElectricScreening {
-  id: number;
-  film: string;
-  d: string;
-  t: string;
-  cinema: string;
-  st: string;
-  sn: string;
-  r: string;
-  bookable: boolean;
-  link: string | false;
-  message: string;
-}
-
-interface ElectricFilm {
-  vistaId: string;
-  title: string;
-  link: string;
-  rating: string;
-  short_synopsis: string;
-  premiere: string;
-  director: string;
-  screeningTypes: string[];
-}
-
 interface ElectricData {
-  cinemas: Record<string, { id: number; title: string; url: string }>;
   films: Record<string, ElectricFilm>;
   screenings: Record<string, ElectricScreening>;
-  screeningTypes: Record<string, { title: string }>;
+  screeningTypes: Record<string, ElectricScreeningType>;
 }
 
-const fetchOpts: RequestInit = {
-  headers: {
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-    Accept: "application/json,text/html;q=0.9",
-    "Accept-Language": "en-GB,en;q=0.9",
-  },
-  redirect: "follow" as const,
-};
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function validateData(value: unknown): ElectricData {
+  if (!isRecord(value) || !isRecord(value.films) || !isRecord(value.screenings) || !isRecord(value.screeningTypes)) {
+    throw new Error("Official JSON feed is missing films, screenings or screeningTypes.");
+  }
+  return value as unknown as ElectricData;
+}
+
+async function fetchData(): Promise<ElectricData> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${DATA_URL}?a=${Date.now()}`, {
+      headers: {
+        "User-Agent": "LondonScreenings/2.0 (+https://github.com/eastoye/London-Screening)",
+        Accept: "application/json",
+        "Accept-Language": "en-GB,en;q=0.9",
+      },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`Official JSON feed returned HTTP ${response.status}.`);
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.toLowerCase().includes("json")) throw new Error(`Official feed returned ${contentType || "an unknown content type"}, not JSON.`);
+    return validateData(await response.json());
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function parseStart(screening: ElectricScreening): Date | null {
+  const date = screening.d.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const time = screening.t.match(/^(\d{1,2}):(\d{2})$/);
+  if (!date || !time) return null;
+  const values = [...date.slice(1), ...time.slice(1)].map(Number);
+  if (values.some((value) => !Number.isInteger(value))) return null;
+  const [year, month, day, hour, minute] = values;
+  if (month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59) return null;
+  return londonToUtc(year, month, day, hour, minute);
+}
+
+function validateUnique(records: ScreeningRecord[]): string | null {
+  const references = new Set<string>();
+  const titleTimes = new Set<string>();
+  for (const record of records) {
+    if (references.has(record.source_reference)) return `Duplicate source reference: ${record.source_reference}`;
+    references.add(record.source_reference);
+    const titleTime = `${record.cinema_name}|${record.movie_title.toLowerCase()}|${record.start_time}`;
+    if (titleTimes.has(titleTime)) return `Duplicate title/time: ${record.movie_title} at ${record.start_time}`;
+    titleTimes.add(titleTime);
+  }
+  return null;
+}
+
+async function enforceCountDrop(
+  supabase: ReturnType<typeof createClient>,
+  cinemaName: string,
+  parsedCount: number,
+  nowUtc: Date
+): Promise<void> {
+  const { count, error } = await supabase
+    .from("screenings")
+    .select("id", { count: "exact", head: true })
+    .eq("cinema_name", cinemaName)
+    .eq("active", true)
+    .gt("start_time", nowUtc.toISOString());
+  if (error) throw new Error(`Could not check ${cinemaName} coverage: ${error.message}`);
+  if ((count ?? 0) >= 10 && parsedCount < Math.ceil((count ?? 0) * MAX_COUNT_DROP_RATIO)) {
+    throw new Error(`${cinemaName} count-drop safeguard: parsed ${parsedCount} versus ${count} existing future screenings.`);
+  }
+}
 
 Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 200, headers: corsHeaders });
-  }
-
+  if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
   const startedAt = new Date();
-  const startedIso = startedAt.toISOString();
-  console.log(`[import-electric] starting at ${startedIso}`);
-
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!supabaseUrl || !serviceRoleKey) {
-    return jsonResponse(
-      { success: false, error: "Missing Supabase credentials." },
-      500
-    );
-  }
+  if (!supabaseUrl || !serviceRoleKey) return jsonResponse({ success: false, error: "Missing Supabase credentials." }, 500);
 
-  const supabase = createClient(supabaseUrl, serviceRoleKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-
-  // We commit per venue, so we need separate run contexts.
-  // But import_runs only allows one running row per cinema_name.
-  // We'll use a single run under "Electric Cinemas" for locking, then
-  // commit per venue with venue-specific contexts.
-  const lockCtx: ImportRunContext = {
-    supabase,
-    cinemaName: "Electric Cinemas",
-    minScreenings: MIN_SCREENINGS,
-    startedAt,
-  };
-
+  const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
+  const lockCtx: ImportRunContext = { supabase, cinemaName: LOCK_NAME, minScreenings: MIN_SCREENINGS, startedAt };
   const runStart = await startRun(lockCtx);
-  if (runStart.blocked) {
-    return jsonResponse(
-      {
-        success: false,
-        error: "Another Electric Cinemas import is already running.",
-        blocked: true,
-      },
-      409
-    );
-  }
-  if (runStart.error || !runStart.runId) {
-    return jsonResponse(
-      { success: false, error: runStart.error ?? "Could not start run." },
-      500
-    );
-  }
+  if (runStart.blocked) return jsonResponse({ success: false, blocked: true, error: "Another Electric Cinemas import is already running." }, 409);
+  if (runStart.error || !runStart.runId) return jsonResponse({ success: false, error: runStart.error ?? "Could not start run." }, 500);
   const runId = runStart.runId;
 
-  // 1. Fetch the JSON data.
-  let data: ElectricData;
+  let found = 0;
   try {
-    const resp = await fetch(`${DATA_URL}?a=${Date.now()}`, fetchOpts);
-    if (!resp.ok) {
-      const msg = `Failed to fetch data: HTTP ${resp.status} ${resp.statusText}`;
-      await endRun(lockCtx, runId, "failed", 0, 0, msg);
-      return jsonResponse({ success: false, error: msg }, 502);
-    }
-    data = await resp.json();
-    console.log(
-      `[import-electric] fetched data: ${Object.keys(data.films).length} films, ${Object.keys(data.screenings).length} screenings`
+    const data = await fetchData();
+    const nowUtc = new Date();
+    const recordsByVenue: Record<string, ScreeningRecord[]> = Object.fromEntries(
+      Object.values(CINEMA_MAP).map((cinemaName) => [cinemaName, []])
     );
-  } catch (err) {
-    const msg = `Network/parse error: ${err instanceof Error ? err.message : String(err)}`;
-    await endRun(lockCtx, runId, "failed", 0, 0, msg);
-    return jsonResponse({ success: false, error: msg }, 502);
-  }
+    const parseErrors: string[] = [];
+    const unknownTypes = new Set<string>();
 
-  const nowUtc = new Date();
+    for (const [feedKey, screening] of Object.entries(data.screenings)) {
+      const cinemaName = CINEMA_MAP[String(screening.cinema)];
+      if (!cinemaName) continue;
+      found += 1;
+      if (String(screening.id) !== feedKey) {
+        parseErrors.push(`Screening key ${feedKey} does not match id ${screening.id}.`);
+        continue;
+      }
+      const film = data.films[String(screening.film)];
+      if (!film?.title?.trim()) {
+        parseErrors.push(`Screening ${screening.id} has no matching titled film.`);
+        continue;
+      }
+      const start = parseStart(screening);
+      if (!start) {
+        parseErrors.push(`Screening ${screening.id} has invalid date/time ${screening.d} ${screening.t}.`);
+        continue;
+      }
+      if (start.getTime() <= nowUtc.getTime()) continue;
 
-  // 2. Build records per venue.
-  const recordsByVenue: Record<string, ScreeningRecord[]> = {
-    "Electric Cinema Portobello": [],
-    "Electric Cinema White City": [],
-  };
-
-  let totalFound = 0;
-  for (const [sid, screening] of Object.entries(data.screenings)) {
-    const cinemaName = CINEMA_MAP[screening.cinema];
-    if (!cinemaName) continue;
-
-    const film = data.films[screening.film];
-    if (!film) continue;
-
-    // Parse date "2026-07-19" and time "19:00"
-    const dateParts = screening.d.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-    const timeParts = screening.t.match(/^(\d{1,2}):(\d{2})$/);
-    if (!dateParts || !timeParts) {
-      console.warn(
-        `[import-electric] unparseable date/time: ${screening.d} ${screening.t}`
-      );
-      continue;
+      const typeCode = screening.st?.trim() ?? "";
+      const typeInfo = typeCode ? data.screeningTypes[typeCode] : undefined;
+      if (typeCode && !typeInfo) unknownTypes.add(typeCode);
+      const metadata = buildSourceMetadata(film, screening, typeInfo);
+      const projectionLabel = metadata.projectionFormats.length ? metadata.projectionFormats.join(", ") : null;
+      recordsByVenue[cinemaName].push({
+        cinema_name: cinemaName,
+        movie_title: film.title.trim(),
+        film_title_hint: metadata.filmTitleHint,
+        start_time: start.toISOString(),
+        booking_url: metadata.bookingUrl,
+        format: projectionLabel,
+        sold_out: metadata.soldOut,
+        projection_formats: metadata.projectionFormats,
+        accessibility_features: metadata.accessibilityFeatures,
+        programme_types: metadata.programmeTypes,
+        availability_status: metadata.availabilityStatus,
+        source_release_year: metadata.releaseYear,
+        source_runtime_minutes: null,
+        source_directors: metadata.directors,
+        source_countries: [],
+        source_event_url: metadata.eventUrl,
+        screen_name: metadata.screenName,
+        screening_label: metadata.screeningLabel,
+        screening_tags: metadata.screeningTags,
+        verified_artwork_url: metadata.artworkUrl,
+        source_reference: `${SOURCE_PREFIX_MAP[String(screening.cinema)]}:${screening.id}`,
+        last_seen_at: startedAt.toISOString(),
+      });
     }
 
-    const year = parseInt(dateParts[1], 10);
-    const month = parseInt(dateParts[2], 10);
-    const day = parseInt(dateParts[3], 10);
-    const hour = parseInt(timeParts[1], 10);
-    const minute = parseInt(timeParts[2], 10);
+    if (parseErrors.length) throw new Error(`Feed parsing was incomplete: ${parseErrors.slice(0, 5).join("; ")}`);
+    const allRecords = Object.values(recordsByVenue).flat();
+    const duplicateError = validateUnique(allRecords);
+    if (duplicateError) throw new Error(duplicateError);
 
-    const utc = londonToUtc(year, month, day, hour, minute);
-    const startTime = utc.toISOString();
-
-    // Skip past screenings
-    if (utc.getTime() <= nowUtc.getTime()) {
-      totalFound++;
-      continue;
-    }
-    totalFound++;
-
-    // Build booking URL
-    const bookingUrl = screening.link
-      ? screening.link.startsWith("http")
-        ? screening.link
-        : `${BASE_URL}${screening.link}`
-      : null;
-
-    // Format label from screening type
-    let format: string | null = null;
-    if (screening.st) {
-      const stInfo = data.screeningTypes[screening.st];
-      format = stInfo ? stInfo.title : screening.st;
+    for (const [cinemaName, records] of Object.entries(recordsByVenue)) {
+      if (records.length < MIN_SCREENINGS) throw new Error(`${cinemaName} screening count too low (${records.length}); database left untouched.`);
+      await enforceCountDrop(supabase, cinemaName, records.length, nowUtc);
     }
 
-    const sourcePrefix = SOURCE_PREFIX_MAP[screening.cinema];
-    const sourceReference = `${sourcePrefix}:${screening.id}`;
+    let saved = 0;
+    const venues = [];
+    for (const [cinemaName, records] of Object.entries(recordsByVenue)) {
+      const venueCtx: ImportRunContext = { supabase, cinemaName, minScreenings: MIN_SCREENINGS, startedAt };
+      const result = await commitImport(venueCtx, records, nowUtc);
+      if (result.errors.length) throw new Error(`${cinemaName}: ${result.errors.join("; ")}`);
+      saved += result.saved;
+      venues.push({ cinema_name: cinemaName, screenings_found: records.length, screenings_saved: result.saved });
+    }
 
-    const soldOut = !screening.bookable;
-
-    recordsByVenue[cinemaName].push({
-      cinema_name: cinemaName,
-      movie_title: film.title,
-      start_time: startTime,
-      booking_url: bookingUrl,
-      format,
-      sold_out: soldOut,
-      source_reference: sourceReference,
-      last_seen_at: new Date().toISOString(),
+    await endRun(lockCtx, runId, "success", found, saved);
+    return jsonResponse({
+      success: true,
+      venues,
+      total_feed_screenings: found,
+      total_screenings_saved: saved,
+      unknown_screening_types: Array.from(unknownTypes),
+      examples: Object.fromEntries(Object.entries(recordsByVenue).map(([name, records]) => [name, records.slice(0, 4)])),
     });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await endRun(lockCtx, runId, "failed", found, 0, message);
+    return jsonResponse({ success: false, error: message }, 500);
   }
-
-  // 3. Validate minimum counts per venue.
-  for (const [cinemaName, records] of Object.entries(recordsByVenue)) {
-    if (records.length < MIN_SCREENINGS) {
-      const msg = `${cinemaName} screening count too low (${records.length}). Database left untouched.`;
-      await endRun(lockCtx, runId, "failed", totalFound, 0, msg);
-      return jsonResponse(
-        {
-          success: false,
-          error: msg,
-          venue_counts: Object.fromEntries(
-            Object.entries(recordsByVenue).map(([k, v]) => [k, v.length])
-          ),
-        },
-        500
-      );
-    }
-  }
-
-  // 4. Commit each venue separately.
-  const venueResults: {
-    cinema_name: string;
-    screenings_found: number;
-    screenings_saved: number;
-    skipped_past: number;
-  }[] = [];
-  let totalSaved = 0;
-  const allErrors: string[] = [];
-
-  for (const [cinemaName, records] of Object.entries(recordsByVenue)) {
-    const venueCtx: ImportRunContext = {
-      supabase,
-      cinemaName,
-      minScreenings: MIN_SCREENINGS,
-      startedAt,
-    };
-    const { saved, errors } = await commitImport(venueCtx, records, nowUtc);
-    totalSaved += saved;
-    allErrors.push(...errors);
-    venueResults.push({
-      cinema_name: cinemaName,
-      screenings_found: records.length,
-      screenings_saved: saved,
-      skipped_past: 0,
-    });
-  }
-
-  if (allErrors.length > 0) {
-    const msg = `Import errors: ${allErrors.join("; ")}`;
-    await endRun(lockCtx, runId, "failed", totalFound, totalSaved, msg);
-    return jsonResponse(
-      {
-        success: false,
-        error: msg,
-        screenings_found: totalFound,
-        screenings_saved: totalSaved,
-      },
-      500
-    );
-  }
-
-  await endRun(lockCtx, runId, "success", totalFound, totalSaved);
-  console.log(`[import-electric] done: found=${totalFound} saved=${totalSaved}`);
-
-  // Build examples per venue
-  const examples: Record<string, ScreeningRecord[]> = {};
-  for (const vr of venueResults) {
-    examples[vr.cinema_name] = recordsByVenue[vr.cinema_name].slice(0, 5);
-  }
-
-  return jsonResponse({
-    success: true,
-    venues: venueResults,
-    total_screenings_found: totalFound,
-    total_screenings_saved: totalSaved,
-    import_started_at: startedIso,
-    import_completed_at: new Date().toISOString(),
-    examples,
-  });
 });
