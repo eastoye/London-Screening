@@ -8,7 +8,6 @@ import {
   commitImport,
   decodeEntities,
   londonToUtc,
-  inferYear,
   type ScreeningRecord,
   type ImportRunContext,
 } from "../_shared/importSafety.ts";
@@ -30,12 +29,28 @@ const SOURCE_PREFIX = "bertha-dochouse";
 const MIN_SCREENINGS = 5;
 const RATIO_GUARD_MIN_EXISTING = 10;
 const MIN_EXPECTED_RATIO = 0.5;
-const MAX_LISTING_PAGES = 8;
 const DETAIL_CONCURRENCY = 6;
+const MAX_SOURCE_AGE_HOURS = 48;
 
 interface EventLink {
   url: string;
   slug: string;
+  title: string;
+  image: string | null;
+  eventType: string | null;
+  performanceDays: Record<string, ListingPerformance[]>;
+}
+
+interface ListingPerformance {
+  time?: unknown;
+  booking_link?: unknown;
+  sold_out?: unknown;
+  status?: unknown;
+}
+
+interface ListingPayload {
+  generated_at?: unknown;
+  events?: unknown;
 }
 
 interface ParsedScreening {
@@ -76,21 +91,6 @@ const fetchOpts: RequestInit = {
   redirect: "follow",
 };
 
-const MONTHS: Record<string, number> = {
-  jan: 1,
-  feb: 2,
-  mar: 3,
-  apr: 4,
-  may: 5,
-  jun: 6,
-  jul: 7,
-  aug: 8,
-  sep: 9,
-  oct: 10,
-  nov: 11,
-  dec: 12,
-};
-
 function decodeMore(value: string): string {
   return decodeEntities(value)
     .replace(/&rsquo;|&#8217;/gi, "’")
@@ -118,45 +118,96 @@ function absoluteDochouseUrl(href: string): string | null {
   }
 }
 
-function extractEventLinks(html: string): EventLink[] {
-  const found = new Map<string, EventLink>();
-  for (const match of html.matchAll(/href\s*=\s*["']([^"']+)["']/gi)) {
-    const url = absoluteDochouseUrl(match[1]);
-    if (!url) continue;
-    const parsed = new URL(url);
-    const slugMatch = parsed.pathname.match(/^\/event\/([^/]+)\/?$/i);
-    if (!slugMatch) continue;
-    const slug = slugMatch[1].toLowerCase();
-    if (!found.has(slug)) found.set(slug, { url, slug });
+function safeArtworkUrl(href: string): string | null {
+  try {
+    const url = new URL(decodeMore(href), WHATSON_URL);
+    if (url.protocol !== "https:") return null;
+    if (
+      url.hostname !== "dochouse.org" &&
+      url.hostname !== "www.dochouse.org" &&
+      !url.hostname.endsWith(".exactdn.com")
+    ) return null;
+    return url.toString();
+  } catch {
+    return null;
   }
-  return [...found.values()];
 }
 
-function hasNextListingsPage(html: string, currentPage: number): boolean {
-  const expected = `/whats-on/page/${currentPage + 1}/`;
-  return html.includes(expected) || /\bSee more\b/i.test(textFromHtml(html));
-}
-
-async function collectEventLinks(): Promise<EventLink[]> {
-  const found = new Map<string, EventLink>();
-
-  for (let page = 1; page <= MAX_LISTING_PAGES; page++) {
-    const url = page === 1 ? WHATSON_URL : `${WHATSON_URL}page/${page}/`;
-    const response = await fetch(url, { ...fetchOpts, signal: AbortSignal.timeout(15000) });
-    if (!response.ok) {
-      if (page > 1 && response.status === 404) break;
-      throw new Error(`DocHouse listings page ${page} returned HTTP ${response.status}`);
+async function fetchHtmlWithRetry(url: string, label: string): Promise<string> {
+  let lastError = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(url, { ...fetchOpts, signal: AbortSignal.timeout(15000) });
+      if (response.ok) return await response.text();
+      lastError = `HTTP ${response.status}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
     }
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+  }
+  throw new Error(`${label} failed after 3 attempts: ${lastError}`);
+}
 
-    const html = await response.text();
-    const links = extractEventLinks(html);
-    for (const link of links) found.set(link.slug, link);
+function parseListingPayload(html: string, nowUtc: Date): EventLink[] {
+  const raw = html.match(
+    /<script\b[^>]*id=["']whats-on-listing-json["'][^>]*>([\s\S]*?)<\/script>/i,
+  )?.[1];
+  if (!raw) throw new Error("DocHouse page has no structured programme payload.");
 
-    if (!hasNextListingsPage(html, page)) break;
-    if (page === MAX_LISTING_PAGES) throw new Error('DocHouse pagination limit reached; import incomplete');
+  let payload: ListingPayload;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    throw new Error("DocHouse structured programme is invalid JSON.");
   }
 
-  return [...found.values()];
+  const generatedAt = typeof payload.generated_at === "string"
+    ? new Date(payload.generated_at)
+    : null;
+  if (!generatedAt || Number.isNaN(generatedAt.getTime())) {
+    throw new Error("DocHouse programme has no valid generation timestamp.");
+  }
+  const ageHours = (nowUtc.getTime() - generatedAt.getTime()) / 3_600_000;
+  if (ageHours > MAX_SOURCE_AGE_HOURS || ageHours < -1) {
+    throw new Error(`DocHouse programme timestamp is implausible (${ageHours.toFixed(1)} hours old).`);
+  }
+  if (!Array.isArray(payload.events) || payload.events.length === 0) {
+    throw new Error("DocHouse structured programme contains no events.");
+  }
+
+  const events: EventLink[] = [];
+  const seen = new Set<string>();
+  for (const value of payload.events) {
+    if (!value || typeof value !== "object") throw new Error("Malformed DocHouse programme event.");
+    const row = value as Record<string, unknown>;
+    const slug = typeof row.id === "string" ? row.id.trim().toLowerCase() : "";
+    const title = typeof row.title === "string" ? textFromHtml(row.title) : "";
+    const url = typeof row.link === "string" ? absoluteDochouseUrl(row.link) : null;
+    const performanceDays = row.performance_day;
+    if (!slug || !title || !url || !performanceDays || typeof performanceDays !== "object" || Array.isArray(performanceDays)) {
+      throw new Error(`Malformed DocHouse programme event: ${slug || title || "unknown"}`);
+    }
+    if (seen.has(slug)) throw new Error(`Duplicate DocHouse event ID: ${slug}`);
+    seen.add(slug);
+    events.push({
+      url,
+      slug,
+      title,
+      image: typeof row.image === "string" ? safeArtworkUrl(row.image) : null,
+      eventType: typeof row.event_type === "string"
+        ? textFromHtml(row.event_type) || null
+        : null,
+      performanceDays: performanceDays as Record<string, ListingPerformance[]>,
+    });
+  }
+  return events;
+}
+
+async function collectEvents(nowUtc: Date): Promise<EventLink[]> {
+  return parseListingPayload(
+    await fetchHtmlWithRetry(WHATSON_URL, "DocHouse programme"),
+    nowUtc,
+  );
 }
 
 function extractTitle(html: string): string {
@@ -198,158 +249,209 @@ function explicitMetadata(html: string): {
   return { projection_formats, accessibility_features, programme_types };
 }
 
-function sourceMetadata(html: string, eventUrl: string, title: string) {
-  const director = html.match(/class=["'][^"']*director[^"']*["'][^>]*>[\s\S]*?<strong>([\s\S]*?)<\/strong>/i);
-  const runtime = html.match(/class=["'][^"']*runtime[^"']*["'][^>]*>[\s\S]*?<strong>([\s\S]*?)<\/strong>/i);
+type OpenCaptionScope = "all" | "single" | null;
+
+function explicitOpenCaptionScope(html: string): OpenCaptionScope {
+  const text = textFromHtml(html);
+  if (/\bthese screenings\s+(?:will be|are|were)\s+open captioned\b/i.test(text)) {
+    return "all";
+  }
+  if (/\b(?:this|the) screening\s+(?:will be|is|was)\s+open captioned\b/i.test(text)) {
+    return "single";
+  }
+  return null;
+}
+
+function performanceCount(event: EventLink): number {
+  return Object.values(event.performanceDays).reduce(
+    (count, performances) => count + (Array.isArray(performances) ? performances.length : 0),
+    0,
+  );
+}
+
+function strongValueForClass(html: string, className: string): string | null {
+  const match = html.match(new RegExp(
+    `<[^>]+class=["'][^"']*\\b${className}\\b[^"']*["'][^>]*>[\\s\\S]*?<strong[^>]*>([\\s\\S]*?)<\\/strong>`,
+    "i",
+  ));
+  return match ? textFromHtml(match[1]) || null : null;
+}
+
+function safeFilmTitleHint(title: string): string | null {
+  if (/\bdouble[ -]bill\b|^DocHouse Shorts\s*:/i.test(title)) return null;
+  if (/\s\+\s/.test(title)) return null;
+  const cleaned = title
+    .replace(/^LDNDOCS\s*:\s*/i, "")
+    .replace(/^Sheffield DocFest Spotlights\s*:\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || null;
+}
+
+function splitExplicitValues(value: string | null): string[] {
+  if (!value) return [];
+  return compactStrings(value.split(/\s*(?:,|\/|;|\s+(?:and|&)\s+)\s*/i));
+}
+
+function sourceMetadata(
+  html: string,
+  eventUrl: string,
+  title: string,
+  listingArtwork: string | null,
+) {
+  const director = strongValueForClass(html, "director");
+  const runtime = strongValueForClass(html, "runtime");
   const artwork = html.match(/<meta\b[^>]*property=["']og:image["'][^>]*content=["']([^"']+)["']/i)?.[1]
     ?? html.match(/<meta\b[^>]*content=["']([^"']+)["'][^>]*property=["']og:image["']/i)?.[1];
-  const yearText = html.match(/class=["'][^"']*(?:release-)?year[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i)?.[1];
-  const countryText = html.match(/class=["'][^"']*countr(?:y|ies)[^"']*["'][^>]*>([\s\S]*?)<\/[^>]+>/i)?.[1];
+  const year = strongValueForClass(html, "year") ?? strongValueForClass(html, "release-year");
+  const country = strongValueForClass(html, "country") ?? strongValueForClass(html, "countries");
   return {
-    film_title_hint: title || null,
-    source_release_year: parseExplicitYear(yearText ? textFromHtml(yearText) : null),
-    source_runtime_minutes: parseRuntimeMinutes(runtime ? textFromHtml(runtime[1]).replace(/(\d)h\b/gi, '$1 hr') : null),
-    source_directors: compactStrings([director ? textFromHtml(director[1]) : null]),
-    source_countries: compactStrings(
-      (countryText ? textFromHtml(countryText) : "").split(/\s*(?:,|\/|;)\s*/)
-    ),
+    film_title_hint: safeFilmTitleHint(title),
+    source_release_year: parseExplicitYear(year),
+    source_runtime_minutes: parseRuntimeMinutes(runtime?.replace(/(\d)h\b/gi, "$1 hr")),
+    source_directors: splitExplicitValues(director),
+    source_countries: /^Various$/i.test(country || "") ? [] : splitExplicitValues(country),
     source_event_url: eventUrl,
     screen_name: null,
     screening_label: null as string | null,
     screening_tags: normaliseScreeningTags([]),
-    verified_artwork_url: artwork ? decodeMore(artwork) : null,
+    verified_artwork_url: safeArtworkUrl(artwork || "") || listingArtwork,
   };
 }
 
-function parseDateTimeLabel(label: string, nowLondon: Date): string | null {
-  const clean = textFromHtml(label);
-  const match = clean.match(
-    /\b(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:day)?\s+(\d{1,2})(?:st|nd|rd|th)?\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:\s+(\d{4}))?\s+(\d{1,2}):(\d{2})\b/i,
-  );
-  if (!match) return null;
-
-  const day = Number(match[1]);
-  const month = MONTHS[match[2].slice(0, 3).toLowerCase()];
-  if (!month) return null;
-  const year = match[3] ? Number(match[3]) : inferYear(day, month, nowLondon);
-  const hour = Number(match[4]);
-  const minute = Number(match[5]);
-  if (day < 1 || day > 31 || hour > 23 || minute > 59) return null;
-
-  return londonToUtc(year, month, day, hour, minute).toISOString();
-}
-
-function screeningSection(html: string): string {
-  const marker = html.search(/Screening\s+times\s+and\s+booking/i);
-  if (marker < 0) return html;
-  const after = html.slice(marker);
-  const end = after.search(/<h[1-4]\b[^>]*>\s*(?:Prices|Stay up to date|Find us)/i);
-  return end > 0 ? after.slice(0, end) : after;
-}
-
-function parseBookableScreenings(
-  section: string,
-  title: string,
-  metadata: ReturnType<typeof explicitMetadata>,
-  source: ReturnType<typeof sourceMetadata>,
-  nowLondon: Date,
-): ParsedScreening[] {
-  const screenings: ParsedScreening[] = [];
-  const seen = new Set<string>();
-
-  for (const match of section.matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
-    const href = decodeMore(match[1]);
-    if (!/https?:\/\/(?:www\.)?curzon\.com\/ticketing\/seats\//i.test(href)) continue;
-
-    const start = parseDateTimeLabel(match[2], nowLondon);
-    if (!start) throw new Error('Unparsed Curzon performance date; import incomplete');
-
-    let bookingUrl: string;
+function performanceLabels(html: string): Map<string, string | null> {
+  const labels = new Map<string, string | null>();
+  for (const match of html.matchAll(
+    /<a\b[^>]*href=["']([^"']*curzon\.com\/ticketing\/seats\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi,
+  )) {
+    let code: string | null = null;
     try {
-      bookingUrl = new URL(href).toString();
+      code = new URL(decodeMore(match[1])).pathname.match(/\/ticketing\/seats\/([^/]+)\/?$/i)?.[1] || null;
     } catch {
       continue;
     }
-
-    const seatCode = new URL(bookingUrl).pathname.split("/").filter(Boolean).pop();
-    if (!seatCode) continue;
-    const source_reference = `${SOURCE_PREFIX}:curzon:${seatCode}`;
-    if (seen.has(source_reference)) continue;
-    seen.add(source_reference);
-
-    screenings.push({
-      movie_title: title,
-      start_time_iso: start,
-      booking_url: bookingUrl,
-      source_reference,
-      sold_out: false,
-      projection_formats: explicitMetadata(match[2]).projection_formats,
-      accessibility_features: explicitMetadata(match[2]).accessibility_features,
-      programme_types: explicitMetadata(match[2]).programme_types,
-      availability_status: "available",
-      ...source,
-      screening_label: textFromHtml(match[2].match(/<div\b[^>]*class=["'][^"']*event-type[^"']*["'][^>]*>([\s\S]*?)<\/div>/i)?.[1] ?? '') || null,
-      screening_tags: normaliseScreeningTags([textFromHtml(match[2])]),
-    });
+    if (!code) continue;
+    const labelHtml = match[2].match(
+      /<div\b[^>]*class=["'][^"']*\bevent-type\b[^"']*["'][^>]*>([\s\S]*?)<\/div>/i,
+    )?.[1];
+    const label = labelHtml ? textFromHtml(labelHtml) || null : null;
+    const previous = labels.get(code);
+    if (previous !== undefined && previous !== label) {
+      throw new Error(`Conflicting labels for Curzon performance ${code}`);
+    }
+    labels.set(code, label);
   }
+  return labels;
+}
 
+function parseListingTime(value: unknown): { hour: number; minute: number } | null {
+  if (typeof value !== "string") return null;
+  const match = value.trim().match(/^(\d{1,2})[.:](\d{2})$/);
+  if (!match) return null;
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59
+    ? { hour, minute }
+    : null;
+}
+
+function explicitSoldOut(performance: ListingPerformance): boolean {
+  return performance.sold_out === true ||
+    (typeof performance.status === "string" && /\bsold\s*out\b/i.test(performance.status));
+}
+
+function parseBookingUrl(value: unknown): { url: string; code: string } | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  try {
+    const url = new URL(decodeMore(value));
+    if (url.protocol !== "https:" || !/(?:^|\.)curzon\.com$/i.test(url.hostname)) return null;
+    const code = url.pathname.match(/^\/ticketing\/seats\/([A-Za-z0-9-]+)\/?$/i)?.[1];
+    return code ? { url: url.toString(), code } : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseStructuredScreenings(
+  event: EventLink,
+  source: ReturnType<typeof sourceMetadata>,
+  labelsByCode: Map<string, string | null>,
+  openCaptionScope: OpenCaptionScope,
+): ParsedScreening[] {
+  const screenings: ParsedScreening[] = [];
+  const eventOpenCaptioned =
+    openCaptionScope === "all" ||
+    (openCaptionScope === "single" && performanceCount(event) === 1);
+  for (const [isoDate, performances] of Object.entries(event.performanceDays)) {
+    const dateMatch = isoDate.match(/^((?:19|20|21)\d{2})-(\d{2})-(\d{2})$/);
+    if (!dateMatch || !Array.isArray(performances)) {
+      throw new Error(`Malformed performance day for ${event.slug}: ${isoDate}`);
+    }
+    const year = Number(dateMatch[1]);
+    const month = Number(dateMatch[2]);
+    const day = Number(dateMatch[3]);
+
+    for (const performance of performances) {
+      if (!performance || typeof performance !== "object") {
+        throw new Error(`Malformed performance for ${event.slug} on ${isoDate}`);
+      }
+      const time = parseListingTime(performance.time);
+      if (!time) throw new Error(`Unparseable time for ${event.slug} on ${isoDate}`);
+      const booking = parseBookingUrl(performance.booking_link);
+      const soldOut = explicitSoldOut(performance);
+      if (!booking && !soldOut) {
+        throw new Error(`Performance has neither a Curzon link nor an explicit sold-out state: ${event.slug} ${isoDate}`);
+      }
+
+      const label = booking && labelsByCode.has(booking.code)
+        ? labelsByCode.get(booking.code) || null
+        : event.eventType;
+      const metadata = explicitMetadata(label || "");
+      const accessibilityFeatures = new Set(metadata.accessibility_features);
+      if (eventOpenCaptioned) accessibilityFeatures.add("captioned");
+      const start = londonToUtc(year, month, day, time.hour, time.minute).toISOString();
+      screenings.push({
+        movie_title: event.title,
+        start_time_iso: start,
+        booking_url: soldOut ? null : booking?.url || null,
+        source_reference: booking
+          ? `${SOURCE_PREFIX}:curzon:${booking.code}`
+          : `${SOURCE_PREFIX}:event:${event.slug}:${isoDate}:${String(time.hour).padStart(2, "0")}${String(time.minute).padStart(2, "0")}`,
+        sold_out: soldOut,
+        projection_formats: metadata.projection_formats,
+        accessibility_features: Array.from(accessibilityFeatures),
+        programme_types: metadata.programme_types,
+        availability_status: soldOut ? "sold_out" : "available",
+        ...source,
+        screening_label: label,
+        screening_tags: normaliseScreeningTags([label]),
+      });
+    }
+  }
   return screenings;
 }
 
-function parseSoldOutScreenings(
-  section: string,
-  title: string,
-  metadata: ReturnType<typeof explicitMetadata>,
-  source: ReturnType<typeof sourceMetadata>,
-  nowLondon: Date,
-  existing: ParsedScreening[],
-  eventSlug: string,
-): ParsedScreening[] {
-  const text = textFromHtml(section);
-  const candidates: ParsedScreening[] = [];
-  const existingTimes = new Set(existing.map((s) => s.start_time_iso));
-
-  const regex = /((?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)(?:day)?\s+\d{1,2}(?:st|nd|rd|th)?\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?:\s+\d{4})?\s+\d{1,2}:\d{2})\s*(?:[-–—|:]\s*)?(?:Sold\s*Out|Soldout)/gi;
-
-  for (const match of text.matchAll(regex)) {
-    const start = parseDateTimeLabel(match[1], nowLondon);
-    if (!start || existingTimes.has(start)) continue;
-    existingTimes.add(start);
-    const compact = start.replace(/[-:.TZ]/g, "");
-    candidates.push({
-      movie_title: title,
-      start_time_iso: start,
-      booking_url: null,
-      source_reference: `${SOURCE_PREFIX}:event:${eventSlug}:soldout:${compact}`,
-      sold_out: true,
-      projection_formats: metadata.projection_formats,
-      accessibility_features: metadata.accessibility_features,
-      programme_types: metadata.programme_types,
-      availability_status: "sold_out",
-      ...source,
-    });
+async function parseEventPage(event: EventLink): Promise<EventParseResult> {
+  const html = await fetchHtmlWithRetry(event.url, `DocHouse event ${event.slug}`);
+  const detailTitle = extractTitle(html);
+  if (!detailTitle) throw new Error(`Event ${event.slug} has no parseable title`);
+  if (detailTitle !== event.title) {
+    throw new Error(`Title mismatch for ${event.slug}: listing "${event.title}" vs detail "${detailTitle}"`);
   }
-
-  return candidates;
+  const source = sourceMetadata(html, event.url, event.title, event.image);
+  return {
+    screenings: parseStructuredScreenings(
+      event,
+      source,
+      performanceLabels(html),
+      explicitOpenCaptionScope(html),
+    ),
+    eventUrl: event.url,
+    title: event.title,
+  };
 }
 
-async function parseEventPage(event: EventLink, nowLondon: Date): Promise<EventParseResult> {
-  const response = await fetch(event.url, { ...fetchOpts, signal: AbortSignal.timeout(15000) });
-  if (!response.ok) throw new Error(`Event ${event.slug} returned HTTP ${response.status}`);
-  const html = await response.text();
-  const title = extractTitle(html);
-  if (!title) throw new Error(`Event ${event.slug} has no parseable title`);
-
-  const section = screeningSection(html);
-  const metadata = explicitMetadata(section);
-  const source = sourceMetadata(html, event.url, title);
-  const bookable = parseBookableScreenings(section, title, metadata, source, nowLondon);
-  const soldOut = parseSoldOutScreenings(section, title, metadata, source, nowLondon, bookable, event.slug);
-
-  return { screenings: [...bookable, ...soldOut], eventUrl: event.url, title };
-}
-
-async function parseAllEvents(events: EventLink[], nowLondon: Date): Promise<{
+async function parseAllEvents(events: EventLink[]): Promise<{
   screenings: ParsedScreening[];
   failedEvents: string[];
   eventsWithNoScreenings: string[];
@@ -360,7 +462,7 @@ async function parseAllEvents(events: EventLink[], nowLondon: Date): Promise<{
 
   for (let i = 0; i < events.length; i += DETAIL_CONCURRENCY) {
     const batch = events.slice(i, i + DETAIL_CONCURRENCY);
-    const results = await Promise.allSettled(batch.map((event) => parseEventPage(event, nowLondon)));
+    const results = await Promise.allSettled(batch.map((event) => parseEventPage(event)));
 
     results.forEach((result, idx) => {
       const event = batch[idx];
@@ -399,6 +501,39 @@ async function getPreviousActiveCount(ctx: ImportRunContext, nowUtc: Date): Prom
   return count ?? 0;
 }
 
+async function preserveExistingReferences(
+  ctx: ImportRunContext,
+  screenings: ParsedScreening[],
+  nowUtc: Date,
+): Promise<number> {
+  const { data, error } = await ctx.supabase
+    .from("screenings")
+    .select("source_reference,start_time,source_event_url")
+    .eq("cinema_name", CINEMA_NAME)
+    .eq("active", true)
+    .gt("start_time", nowUtc.toISOString());
+  if (error) throw new Error(`Could not read existing screening identities: ${error.message}`);
+
+  const existing = new Map<string, string>();
+  for (const row of data || []) {
+    if (!row.source_reference || !row.start_time || !row.source_event_url) continue;
+    existing.set(
+      `${row.source_event_url}\u0000${new Date(row.start_time).toISOString()}`,
+      row.source_reference,
+    );
+  }
+
+  let preserved = 0;
+  for (const screening of screenings) {
+    const previous = existing.get(`${screening.source_event_url}\u0000${screening.start_time_iso}`);
+    if (previous && previous !== screening.source_reference) {
+      screening.source_reference = previous;
+      preserved += 1;
+    }
+  }
+  return preserved;
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response(null, { status: 200, headers: corsHeaders });
 
@@ -428,21 +563,31 @@ Deno.serve(async (req: Request) => {
 
   try {
     const nowUtc = new Date();
-    const nowLondon = new Date(
-      nowUtc.toLocaleString("en-US", { timeZone: "Europe/London" })
-    );
+    const events = await collectEvents(nowUtc);
 
-    const events = await collectEventLinks();
-    if (events.length === 0) throw new Error("DocHouse listings contained no event detail links.");
-
-    const parsed = await parseAllEvents(events, nowLondon);
+    const parsed = await parseAllEvents(events);
     if (parsed.failedEvents.length > 0) {
-      throw new Error(`Too many DocHouse event pages failed (${parsed.failedEvents.length}/${events.length}): ${parsed.failedEvents.slice(0, 5).join(" | ")}`);
+      throw new Error(`DocHouse event pages failed (${parsed.failedEvents.length}/${events.length}): ${parsed.failedEvents.slice(0, 5).join(" | ")}`);
     }
 
     const future = parsed.screenings
       .filter((screening) => new Date(screening.start_time_iso) > nowUtc)
       .sort((a, b) => a.start_time_iso.localeCompare(b.start_time_iso));
+
+    const existingReferencesPreserved = await preserveExistingReferences(ctx, future, nowUtc);
+    const references = new Set<string>();
+    const titleTimes = new Set<string>();
+    for (const screening of future) {
+      if (references.has(screening.source_reference)) {
+        throw new Error(`Duplicate source reference: ${screening.source_reference}`);
+      }
+      references.add(screening.source_reference);
+      const titleTime = `${screening.movie_title.toLocaleLowerCase("en-GB")}\u0000${screening.start_time_iso}`;
+      if (titleTimes.has(titleTime)) {
+        throw new Error(`Duplicate title/time: ${screening.movie_title} at ${screening.start_time_iso}`);
+      }
+      titleTimes.add(titleTime);
+    }
 
     const previousCount = await getPreviousActiveCount(ctx, nowUtc);
     if (previousCount >= RATIO_GUARD_MIN_EXISTING && future.length < Math.ceil(previousCount * MIN_EXPECTED_RATIO)) {
@@ -492,6 +637,7 @@ Deno.serve(async (req: Request) => {
       failed_event_pages: parsed.failedEvents,
       events_without_current_screenings: parsed.eventsWithNoScreenings,
       previous_active: previousCount,
+      existing_references_preserved: existingReferencesPreserved,
       screenings: future.map((screening) => ({
         title: screening.movie_title,
         start_time: screening.start_time_iso,
