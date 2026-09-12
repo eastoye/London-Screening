@@ -14,7 +14,12 @@ const SOURCE_PREFIX = "actone";
 const HOME_URL = "https://actonecinema.co.uk/ActOneCinema.dll/Home";
 const MIN_SCREENINGS = 5;
 const MIN_EXPECTED_RATIO = 0.5;
-const NON_SCREEN_TYPES = new Set(["Fun in the Lounge", "Live Music"]);
+const SCREEN_TYPES = new Set(["Film", "Special Events"]);
+const ARTWORK_HOSTS = new Set(["indy-systems.imgix.net", "images.savoysystems.co.uk"]);
+const EXCLUDED_SPECIAL_EVENT_TITLES = [
+  /^A15 Special Event:/i,
+  /:\s*The Play$/i,
+];
 
 interface ActOneSection { IsOpenForSale?: "Y" | "N" | boolean }
 interface ActOnePerformance {
@@ -49,6 +54,7 @@ function extractEvents(html: string): ActOneEvent[] {
   if (start < 0 || end < 0) throw new Error("ActOne Events feed boundaries were not found");
   const parsed = JSON.parse(html.slice(start, end).trim().replace(/;$/, "")) as { Events?: ActOneEvent[] };
   if (!Array.isArray(parsed.Events)) throw new Error("ActOne Events feed had an unexpected shape");
+  if (parsed.Events.length < 10) throw new Error(`ActOne Events feed was unusually small (${parsed.Events.length})`);
   return parsed.Events;
 }
 
@@ -63,24 +69,69 @@ function parseStart(performance: ActOnePerformance): Date | null {
 
 function absoluteUrl(value: string | null | undefined): string | null {
   if (!value?.trim()) return null;
-  return new URL(decodeEntities(value.trim()), HOME_URL).href;
+  try {
+    const url = new URL(decodeEntities(value.trim()), HOME_URL);
+    return url.protocol === "https:" && url.origin === new URL(HOME_URL).origin
+      ? url.href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function eventUrlFor(event: ActOneEvent): string | null {
+  const url = absoluteUrl(event.URL);
+  if (!url) return null;
+  const parsed = new URL(url);
+  return parsed.pathname === "/ActOneCinema.dll/WhatsOn"
+      && parsed.searchParams.get("f") === String(event.ID)
+    ? url
+    : null;
+}
+
+function bookingUrlFor(performance: ActOnePerformance): string | null {
+  const url = absoluteUrl(performance.URL);
+  return url && new RegExp(`TcsPerformance_${performance.ID}(?:\\.|$)`).test(decodeURIComponent(url))
+    ? url
+    : null;
+}
+
+function artworkUrlFor(value: string | null | undefined): string | null {
+  if (!value?.trim()) return null;
+  try {
+    const url = new URL(decodeEntities(value.trim()));
+    return url.protocol === "https:" && ARTWORK_HOSTS.has(url.hostname)
+      ? url.href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function isScreenEvent(title: string, type: string): boolean {
+  if (!SCREEN_TYPES.has(type)) return false;
+  return type !== "Special Events"
+    || !EXCLUDED_SPECIAL_EVENT_TITLES.some((pattern) => pattern.test(title));
 }
 
 function cleanFilmTitleHint(title: string, type: string): string | null {
   if (type !== "Film" && type !== "Special Events") return null;
   const hint = title
     .replace(/^(?:SEND FRIENDLY|CARERS?\s*(?:&|AND)\s*BABIES|CLASSICONE CINEMA CLUB)\s*:\s*/i, "")
+    .replace(/^A15 Special Screening:\s*/i, "")
+    .replace(/^GENERAL WITCHFINDERS PRESENT:\s*/i, "")
     .replace(/\s*\+\s*(?:LIVE\s+|DIRECTOR\s+)?Q\s*(?:&|\+)\s*A\s*$/i, "")
     .replace(/\s*\+\s*(?:PANEL\s+)?DISCUSSION\s*$/i, "")
+    .replace(/\s*\([^()]*(?:&| and )[^()]*\)\s*$/i, "")
     .trim();
-  if (!hint || /^HKFFUK\b/i.test(hint) || /\bIN CONVERSATION\b/i.test(hint)) return null;
+  if (!hint || /^HKFFUK\b/i.test(hint) || /\bIN CONVERSATION\b|\bWORKSHOP\b|\bFILM FESTIVAL\b/i.test(hint)) return null;
   return hint === title && type !== "Film" ? null : hint;
 }
 
 function yes(value: unknown): boolean { return value === "Y" || value === true }
 
-function labelsFor(performance: ActOnePerformance): string[] {
-  const labels: string[] = [];
+function labelsFor(performance: ActOnePerformance): { labels: string[]; structured: string[] } {
+  const structured: string[] = [];
   const mappings: Array<[keyof ActOnePerformance, string]> = [
     ["CC", "Captions"], ["AD", "Audio Described"], ["SF", "SEND Friendly"],
     ["C1", "ClassicOne Cinema"], ["CB", "Carers & Babies"], ["SB", "Subtitled"],
@@ -88,9 +139,10 @@ function labelsFor(performance: ActOnePerformance): string[] {
     ["RS", "Restoration"], ["FP", "Footprints"], ["FF", "Family Friendly"],
     ["NA", "No Ads/Trailers"],
   ];
-  for (const [key, label] of mappings) if (yes(performance[key])) labels.push(label);
+  for (const [key, label] of mappings) if (yes(performance[key])) structured.push(label);
+  const labels = [...structured];
   if (performance.Notes?.trim()) labels.push(decodeEntities(performance.Notes.trim()));
-  return labels;
+  return { labels, structured };
 }
 
 function buildRecords(events: ActOneEvent[], nowUtc: Date) {
@@ -98,17 +150,24 @@ function buildRecords(events: ActOneEvent[], nowUtc: Date) {
   for (const event of events) {
     const title = decodeEntities(event.Title || "").replace(/\s+/g, " ").trim();
     const type = decodeEntities(event.TypeDescription || "").trim();
-    if (!title || NON_SCREEN_TYPES.has(type)) {
+    if (!title || !isScreenEvent(title, type)) {
       if (title) excludedEvents.push(title);
       continue;
     }
-    const eventUrl = absoluteUrl(event.URL);
-    const artworkUrl = absoluteUrl(event.ImageURL);
+    if (!Number.isSafeInteger(event.ID) || event.ID <= 0) {
+      throw new Error("Missing or invalid ActOne event ID; database left untouched");
+    }
+    if (!Array.isArray(event.Performances)) {
+      throw new Error(`Event ${event.ID} had no performance array; database left untouched`);
+    }
+    const eventUrl = eventUrlFor(event);
+    if (!eventUrl) throw new Error(`Event ${event.ID} had an invalid official event URL`);
+    const artworkUrl = artworkUrlFor(event.ImageURL);
     const explicitFormats = compactStrings((event.Tags || []).map((tag) => tag.Format));
-    const sourceDirectors = compactStrings([event.Director]);
+    const sourceDirectors = compactStrings((event.Director || "").split(/\s*(?:,|\/|;|\band\b|&)\s*/i));
     const sourceCountries = compactStrings((event.Country || "").split(/\s*(?:,|\/|;)\s*/));
 
-    for (const performance of event.Performances || []) {
+    for (const performance of event.Performances) {
       if (!Number.isSafeInteger(performance.ID) || performance.ID <= 0) {
         throw new Error('Missing or invalid performance ID; database left untouched');
       }
@@ -119,12 +178,15 @@ function buildRecords(events: ActOneEvent[], nowUtc: Date) {
       }
       if (start.getTime() <= nowUtc.getTime()) continue;
       const soldOut = yes(performance.IsSoldOut);
-      const bookingUrl = absoluteUrl(performance.URL);
+      const bookingUrl = bookingUrlFor(performance);
       const openForSale = typeof performance.IsOpenForSale === "boolean"
         ? performance.IsOpenForSale
         : performance.Sections?.some((section) => yes(section.IsOpenForSale)) ?? null;
-      const labels = labelsFor(performance);
-      const projectionFormats = normaliseProjectionFormats([...explicitFormats, ...labels]);
+      if (openForSale === true && !bookingUrl) {
+        throw new Error(`Open performance ${performance.ID} had no valid direct booking URL`);
+      }
+      const { labels, structured } = labelsFor(performance);
+      const projectionFormats = normaliseProjectionFormats([...explicitFormats, ...structured]);
       const accessibilityFeatures = [];
       if (yes(performance.CC)) accessibilityFeatures.push("captioned" as const);
       if (yes(performance.AD)) accessibilityFeatures.push("audio_described" as const);
@@ -133,7 +195,7 @@ function buildRecords(events: ActOneEvent[], nowUtc: Date) {
         cinema_name: CINEMA_NAME,
         movie_title: title,
         start_time: start.toISOString(),
-        booking_url: bookingUrl || eventUrl,
+        booking_url: soldOut ? null : bookingUrl,
         format: explicitFormats.length ? explicitFormats.join(", ") : null,
         sold_out: soldOut,
         projection_formats: projectionFormats,
@@ -148,7 +210,7 @@ function buildRecords(events: ActOneEvent[], nowUtc: Date) {
         source_event_url: eventUrl,
         screen_name: performance.AuditoriumName?.trim() || null,
         screening_label: labels.length ? labels.join(", ") : null,
-        screening_tags: normaliseScreeningTags(labels),
+        screening_tags: normaliseScreeningTags(structured),
         verified_artwork_url: artworkUrl,
         source_reference: `${SOURCE_PREFIX}:${performance.ID}`,
         last_seen_at: nowUtc.toISOString(),
@@ -180,7 +242,11 @@ Deno.serve(async (req: Request) => {
   try {
     const response = await fetch(HOME_URL, { ...fetchOptions, signal: AbortSignal.timeout(30000) });
     if (!response.ok) throw new Error(`ActOne returned HTTP ${response.status}`);
-    const events = extractEvents(await response.text());
+    const html = await response.text();
+    if (html.length < 500_000 || !html.includes("var Events") || !html.includes("Performances")) {
+      throw new Error(`ActOne response was incomplete (${html.length} bytes)`);
+    }
+    const events = extractEvents(html);
     const nowUtc = new Date();
     const parsed = buildRecords(events, nowUtc);
     if (parsed.parseErrors.length) throw new Error(`Incomplete programme: ${parsed.parseErrors.join('; ')}`);
@@ -193,6 +259,12 @@ Deno.serve(async (req: Request) => {
       seen.set(record.source_reference, record);
     }
     const records = Array.from(new Map(parsed.records.map((record) => [record.source_reference, record])).values());
+    const titleTimes = new Set<string>();
+    for (const record of records) {
+      const key = `${record.movie_title.toLowerCase()}|${record.start_time}`;
+      if (titleTimes.has(key)) throw new Error(`Duplicate title/time detected: ${record.movie_title} at ${record.start_time}`);
+      titleTimes.add(key);
+    }
     if (records.length < MIN_SCREENINGS) throw new Error(`Unusually low screening count (${records.length}); database left untouched`);
     const previous = await previousActiveCount(ctx, nowUtc);
     if (previous >= MIN_SCREENINGS && records.length < Math.floor(previous * MIN_EXPECTED_RATIO)) {
@@ -205,6 +277,16 @@ Deno.serve(async (req: Request) => {
       success: true, cinema: CINEMA_NAME, events_found: events.length,
       screenings_found: records.length, screenings_saved: saved, previous_active: previous,
       excluded_non_screen_events: parsed.excludedEvents, parse_errors: parsed.parseErrors.slice(0, 10),
+      metadata: {
+        film_title_hints: records.filter((row) => row.film_title_hint).length,
+        release_years: records.filter((row) => row.source_release_year).length,
+        runtimes: records.filter((row) => row.source_runtime_minutes).length,
+        directors: records.filter((row) => row.source_directors?.length).length,
+        countries: records.filter((row) => row.source_countries?.length).length,
+        artwork: records.filter((row) => row.verified_artwork_url).length,
+        screens: records.filter((row) => row.screen_name).length,
+        known_availability: records.filter((row) => row.availability_status !== "unknown").length,
+      },
       examples: records.slice(0, 5),
     });
   } catch (error) {
