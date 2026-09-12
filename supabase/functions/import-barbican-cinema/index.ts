@@ -20,6 +20,8 @@ import {
 const CINEMA_NAME = "Barbican Cinema";
 const CINEMA_URL = "https://www.barbican.org.uk/whats-on/cinema";
 const BOOKING_BASE = "https://tickets.barbican.org.uk";
+const SPEKTRIX_API_BASE =
+  "https://spektrix.barbican.org.uk/barbicancentre/api/v3";
 const SOURCE_PREFIX = "barbican";
 const LOOKAHEAD_DAYS = 30;
 const FETCH_BATCH_SIZE = 5;
@@ -49,6 +51,15 @@ interface ParsedScreening {
   screening_label: string | null;
   screening_tags: ReturnType<typeof normaliseScreeningTags>;
   verified_artwork_url: string | null;
+}
+
+interface SpektrixInstance {
+  id?: string;
+  startUtc?: string;
+  cancelled?: boolean;
+  attribute_AudioDescribed?: boolean;
+  attribute_Captioned?: boolean;
+  attribute_Relaxed?: boolean;
 }
 
 const fetchOpts: RequestInit = {
@@ -135,6 +146,52 @@ function normaliseTitleAndFormat(rawTitle: string): {
   };
 }
 
+/**
+ * Return a movie-matching hint only when the detail page names one film.
+ * Public display titles are never changed. Event additions are removed only
+ * when introduced by explicit source wording; double bills and compilations
+ * deliberately remain unknown.
+ */
+function safeFilmTitleHint(raw: string | null): string | null {
+  if (!raw) return null;
+  if (
+    /\bSeries\s+\d+\b/i.test(raw) ||
+    /\bEpisode\s+\d+\b/i.test(raw) ||
+    /\bTV\s+Preview\b/i.test(raw) ||
+    /^Season Preview:/i.test(raw)
+  ) {
+    return null;
+  }
+
+  let value = raw
+    .replace(/^Adrian Wootton Presents\.\.\.\s*/i, "")
+    .replace(/^Contemporary\s+75:\s*/i, "")
+    .replace(/^Preview:\s*/i, "")
+    .replace(/^parent\s*(?:&|and)\s*baby\s+screening\s*:\s*/i, "")
+    .replace(/^relaxed\s+screening\s*:\s*/i, "")
+    .replace(/^senior(?:s| community)?\s+(?:cinema|screening)\s*:\s*/i, "")
+    .replace(
+      /\s*(?:\+|with)\s+(?:(?:an?|the)\s+)?(?:introduction|intro|screen\s*talk|screentalk|q\s*&\s*a|discussion|conversation|pre-film\b)[\s\S]*$/i,
+      "",
+    )
+    .replace(
+      /\s*\[\s*(?:35\s*mm|70\s*mm|imax|dubbed|subtitled|captioned|cap|ad|rel|audio\s+described|relaxed)\s*\]\s*/gi,
+      " ",
+    )
+    .replace(/\s*\((?:2K|4K|8K)?\s*Restoration\)\s*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!value) return null;
+  if (/\s(?:\+|&)\s/.test(value)) return null;
+  if (
+    /\b(?:short films?|short stories|shorts programme|programme of shorts|compilation|double bill|triple bill|trilogy)\b/i.test(value)
+  ) {
+    return null;
+  }
+  return value;
+}
+
 function isClearlyNonFilm(title: string): boolean {
   if (/^panel\s*:/i.test(title) && !/\b(screening|film|cinema)\b|\+/i.test(title)) return true;
   if (/\bnetworking\b/i.test(title)) return true;
@@ -147,13 +204,19 @@ function normaliseMetadata(explicit: string, soldOut: boolean) {
   const accessibility_features: string[] = [];
   const programme_types: string[] = [];
 
-  if (/\b(?:captioned|open captions?|hard of hearing|hoh)\b/i.test(explicit)) {
+  if (
+    /\b(?:captioned|open captions?|hard of hearing|hoh)\b/i.test(explicit) ||
+    /\bCAP\b/.test(explicit)
+  ) {
     accessibility_features.push("captioned");
   }
-  if (/\b(?:audio described|audio description)\b/i.test(explicit)) {
+  if (
+    /\b(?:audio described|audio description)\b/i.test(explicit) ||
+    /\bAD\b/.test(explicit)
+  ) {
     accessibility_features.push("audio_described");
   }
-  if (/\brelaxed screening\b/i.test(explicit)) {
+  if (/\brelaxed screening\b/i.test(explicit) || /\bREL\b/.test(explicit)) {
     accessibility_features.push("relaxed");
   }
   if (/\bparent\s*(?:&|and)\s*baby\b|\bparent and baby screening\b/i.test(explicit)) {
@@ -262,13 +325,14 @@ function parseDayPage(html: string, isoDate: string): {
       const sourceLabels = compactStrings([
         /\bCAP\b/.test(instanceText) ? "CAP" : null,
         /\bAD\b/.test(instanceText) ? "AD" : null,
+        /\bREL\b/.test(instanceText) ? "REL" : null,
         soldOut ? "Sold out" : null,
       ]);
       const start = londonToUtc(year, month, day, time.hour, time.minute);
       screenings.push({
         movie_title: titleData.title,
         start_time_iso: start.toISOString(),
-        booking_url: instanceId ? `${BOOKING_BASE}/choose-seats/${instanceId}` : eventHref,
+        booking_url: !soldOut && instanceId ? `${BOOKING_BASE}/choose-seats/${instanceId}` : null,
         source_reference: sourceReference,
         sold_out: soldOut,
         projection_formats: titleData.projection_formats,
@@ -283,7 +347,7 @@ function parseDayPage(html: string, isoDate: string): {
         source_countries: [],
         screen_name: null,
         screening_label: sourceLabels.length ? sourceLabels.join(", ") : null,
-        screening_tags: normaliseScreeningTags([tagsText, instanceText]),
+        screening_tags: normaliseScreeningTags([rawTitle, tagsText, instanceText]),
         verified_artwork_url: null,
       });
     }
@@ -328,16 +392,22 @@ function detailValue(html: string, label: string): string | null {
 function parseEventDetail(html: string) {
   const artwork = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i)?.[1] || null;
   const venue = html.match(/event-byline__venue[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i);
-  let dataLayer: { title?: string; subtitle?: string; listingTitle?: string } | null = null;
+  let dataLayer: {
+    title?: string;
+    subtitle?: string;
+    listingTitle?: string;
+    eventInfo?: Array<{ id?: string }>;
+  } | null = null;
   const dataMatch = html.match(/var\s+dataLayer\s*=\s*(\[[\s\S]*?\]);\s*<\/script>/i);
   if (dataMatch) {
     try { dataLayer = JSON.parse(dataMatch[1])?.[0] || null; } catch { /* retain nulls */ }
   }
   return {
-    filmTitleHint: dataLayer?.title?.trim() || null,
+    filmTitleHint: safeFilmTitleHint(dataLayer?.title?.trim() || null),
+    spektrixEventId: dataLayer?.eventInfo?.[0]?.id?.trim() || null,
     releaseYear: parseExplicitYear(detailValue(html, "Release year")),
     runtime: parseRuntimeMinutes(detailValue(html, "Runtime")),
-    directors: compactStrings([detailValue(html, "Director")]),
+    directors: compactStrings((detailValue(html, "Director") || "").split(/\s*(?:,|;|\/|&|\band\b)\s*/i)),
     countries: compactStrings((detailValue(html, "Country of origin") || "").split(/\s*(?:,|\/|;)\s*/)),
     screenName: venue && /^Cinema\s+\d+$/i.test(textFromHtml(venue[1]))
       ? textFromHtml(venue[1])
@@ -345,6 +415,53 @@ function parseEventDetail(html: string) {
     artworkUrl: artwork ? decodeEntities(artwork) : null,
     tags: normaliseScreeningTags([dataLayer?.subtitle]),
   };
+}
+
+async function fetchJsonWithRetry<T>(url: string, label: string): Promise<T> {
+  let lastError = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers: { ...fetchOpts.headers, Accept: "application/json" },
+        redirect: "follow",
+        signal: AbortSignal.timeout(15000),
+      });
+      if (response.ok) return await response.json() as T;
+      lastError = `HTTP ${response.status}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+  }
+  throw new Error(`${label} failed after 3 attempts: ${lastError}`);
+}
+
+function publicInstanceId(id: string | undefined): string | null {
+  return id?.match(/^\d+/)?.[0] || null;
+}
+
+function spektrixUtcMillis(value: string): number {
+  const explicitUtc = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value) ? value : `${value}Z`;
+  return new Date(explicitUtc).getTime();
+}
+
+function mergeSpektrixAccessibility(
+  screening: ParsedScreening,
+  instance: SpektrixInstance,
+): void {
+  const features = new Set(screening.accessibility_features);
+  const labels = new Set(compactStrings(screening.screening_label?.split(/\s*,\s*/) || []));
+  if (instance.attribute_Captioned) {
+    features.add("captioned");
+    labels.add("CAP");
+  }
+  if (instance.attribute_AudioDescribed) {
+    features.add("audio_described");
+    labels.add("AD");
+  }
+  if (instance.attribute_Relaxed) features.add("relaxed");
+  screening.accessibility_features = Array.from(features);
+  screening.screening_label = labels.size > 0 ? Array.from(labels).join(", ") : null;
 }
 
 async function getPreviousActiveCount(
@@ -359,6 +476,38 @@ async function getPreviousActiveCount(
     .gt("start_time", nowUtc.toISOString());
   if (error) throw new Error(`Could not read previous screening count: ${error.message}`);
   return count ?? 0;
+}
+
+async function preserveExistingReferences(
+  ctx: ImportRunContext,
+  screenings: ParsedScreening[],
+  nowUtc: Date,
+): Promise<number> {
+  const { data, error } = await ctx.supabase
+    .from("screenings")
+    .select("source_reference,start_time,source_event_url")
+    .eq("cinema_name", CINEMA_NAME)
+    .eq("active", true)
+    .gt("start_time", nowUtc.toISOString());
+  if (error) throw new Error(`Could not read existing screening identities: ${error.message}`);
+
+  const existingByEventAndTime = new Map<string, string>();
+  for (const row of data || []) {
+    if (!row.source_event_url || !row.source_reference || !row.start_time) continue;
+    const key = `${row.source_event_url}\u0000${new Date(row.start_time).toISOString()}`;
+    existingByEventAndTime.set(key, row.source_reference);
+  }
+
+  let preserved = 0;
+  for (const screening of screenings) {
+    const key = `${screening.event_url}\u0000${screening.start_time_iso}`;
+    const existingReference = existingByEventAndTime.get(key);
+    if (existingReference && existingReference !== screening.source_reference) {
+      screening.source_reference = existingReference;
+      preserved += 1;
+    }
+  }
+  return preserved;
 }
 
 Deno.serve(async (req: Request) => {
@@ -439,10 +588,31 @@ Deno.serve(async (req: Request) => {
       })));
       for (const page of pages) details.set(page.url, parseEventDetail(page.html));
     }
+
+    const soldOutEventUrls = detailUrls.filter((url) =>
+      Array.from(byReference.values()).some((screening) =>
+        screening.event_url === url && screening.source_reference.startsWith(`${SOURCE_PREFIX}:soldout:`)
+      )
+    );
+    const instancesByEventUrl = new Map<string, SpektrixInstance[]>();
+    for (let i = 0; i < soldOutEventUrls.length; i += FETCH_BATCH_SIZE) {
+      const batch = soldOutEventUrls.slice(i, i + FETCH_BATCH_SIZE);
+      const responses = await Promise.all(batch.map(async (url) => {
+        const eventId = details.get(url)?.spektrixEventId;
+        if (!eventId) throw new Error(`Sold-out Barbican event has no Spektrix event ID: ${url}`);
+        const instances = await fetchJsonWithRetry<SpektrixInstance[]>(
+          `${SPEKTRIX_API_BASE}/events/${encodeURIComponent(eventId)}/instances`,
+          `Barbican Spektrix instances ${eventId}`,
+        );
+        return { url, instances };
+      }));
+      for (const response of responses) instancesByEventUrl.set(response.url, response.instances);
+    }
+
     for (const screening of byReference.values()) {
       const detail = details.get(screening.event_url);
       if (!detail) continue;
-      screening.film_title_hint = detail.filmTitleHint || screening.film_title_hint;
+      screening.film_title_hint = detail.filmTitleHint;
       screening.source_release_year = detail.releaseYear;
       screening.source_runtime_minutes = detail.runtime;
       screening.source_directors = detail.directors;
@@ -450,12 +620,47 @@ Deno.serve(async (req: Request) => {
       screening.screen_name = detail.screenName;
       screening.verified_artwork_url = detail.artworkUrl;
       screening.screening_tags = Array.from(new Set([...screening.screening_tags, ...detail.tags]));
+
+      if (screening.source_reference.startsWith(`${SOURCE_PREFIX}:soldout:`)) {
+        const matches = (instancesByEventUrl.get(screening.event_url) || []).filter((instance) =>
+          !instance.cancelled && instance.startUtc &&
+          spektrixUtcMillis(instance.startUtc) === new Date(screening.start_time_iso).getTime()
+        );
+        if (matches.length !== 1) {
+          throw new Error(
+            `Could not uniquely match sold-out performance ${screening.movie_title} at ${screening.start_time_iso}`,
+          );
+        }
+        const instanceId = publicInstanceId(matches[0].id);
+        if (!instanceId) {
+          throw new Error(`Sold-out Barbican performance has no public instance ID: ${screening.event_url}`);
+        }
+        screening.source_reference = `${SOURCE_PREFIX}:spektrix:${instanceId}`;
+        mergeSpektrixAccessibility(screening, matches[0]);
+      }
     }
 
     const nowUtc = new Date();
     const upcoming = Array.from(byReference.values()).filter(
       (screening) => new Date(screening.start_time_iso).getTime() > nowUtc.getTime(),
     );
+    const existingReferencesPreserved = await preserveExistingReferences(ctx, upcoming, nowUtc);
+
+    const finalReferences = new Set<string>();
+    const finalTitleTimes = new Set<string>();
+    for (const screening of upcoming) {
+      if (finalReferences.has(screening.source_reference)) {
+        throw new Error(`Duplicate final source reference: ${screening.source_reference}`);
+      }
+      finalReferences.add(screening.source_reference);
+      const titleTimeKey = `${screening.movie_title.toLocaleLowerCase("en-GB")}\u0000${screening.start_time_iso}`;
+      if (finalTitleTimes.has(titleTimeKey)) {
+        throw new Error(
+          `Duplicate final title/time: ${screening.movie_title} at ${screening.start_time_iso}`,
+        );
+      }
+      finalTitleTimes.add(titleTimeKey);
+    }
     if (upcoming.length < MIN_SCREENINGS) {
       throw new Error(`Unusually low screening count (${upcoming.length}); database left untouched.`);
     }
@@ -515,6 +720,8 @@ Deno.serve(async (req: Request) => {
       screenings_saved: saved,
       previous_active: previousActive,
       event_pages_fetched: detailUrls.length,
+      spektrix_instance_lookups: soldOutEventUrls.length,
+      existing_references_preserved: existingReferencesPreserved,
       excluded_non_film: Array.from(excluded).sort(),
       examples: upcoming.slice(0, 5),
       import_started_at: startedAt.toISOString(),
