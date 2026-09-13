@@ -1,193 +1,106 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import {
+  commitImport,
   corsHeaders,
+  endRun,
   jsonResponse,
   startRun,
-  endRun,
-  commitImport,
-  type ScreeningRecord,
   type ImportRunContext,
+  type ScreeningRecord,
 } from "../_shared/importSafety.ts";
-import {
-  fetchAllScreenings,
-  type SpektrixConfig,
-  type SpektrixEvent,
-} from "../_shared/spektrixParser.ts";
+import { CINEMA_NAME } from "./source.ts";
+import { parseRichMixProgramme } from "./parser.ts";
 
-const CINEMA_NAME = "Rich Mix";
-const MIN_SCREENINGS = 3;
-
-const config: SpektrixConfig = {
-  client: "richmix",
-  baseUrl: "https://system.spektrix.com",
-  sourcePrefix: "richmix",
-  publicBookingBaseUrl: "https://richmix.org.uk/book/instance",
-};
-
-const CERTIFICATE_RE = /\s*\((?:U|PG|12A?|15|18|R18|TBC|CERT(?:IFICATE)?\s*TBC)\)\s*$/i;
-const NON_DISPLAY_FORMAT_RE = /^(?:film|u|pg|12a?|15|18|r18|tbc|age rating|cert(?:ificate)?\s*tbc)$/i;
-
-// Rich Mix's Spektrix event name includes presentation labels and the BBFC
-// certificate. Keep those out of movie_title so poster/title matching sees the
-// actual film name used on Rich Mix's public cinema page.
-function cleanMovieTitle(title: string): string {
-  return title
-    .replace(CERTIFICATE_RE, "")
-    .replace(/^(?:Film|Premiere|Black In Season)\s*:\s*/i, "")
-    .replace(/\s+/g, " ")
-    .trim();
+function duplicates(records: ScreeningRecord[], key: (record: ScreeningRecord) => string): string[] {
+  const counts = new Map<string, number>();
+  for (const record of records) counts.set(key(record), (counts.get(key(record)) ?? 0) + 1);
+  return [...counts.entries()].filter(([, count]) => count > 1).map(([value]) => value);
 }
 
-// The legacy importer fell back to every Spektrix label when `format` was
-// empty. That exposed classification/certificate values such as "Film" and
-// "12A" on the listing. Only retain a real format value here.
-function cleanDisplayFormat(format: string | null): string | null {
-  if (!format) return null;
-  const value = format.trim();
-  if (!value || NON_DISPLAY_FORMAT_RE.test(value)) return null;
-  return value;
-}
-
-// Spektrix documents that ChooseSeats.aspx accepts the initial integer portion
-// of an API v3 EventInstanceId. Rich Mix's public ticket domain uses that form.
-function richMixBookingUrl(eventInstanceId: string, fallback: string): string {
-  const publicId = eventInstanceId.match(/^\d+/)?.[0];
-  if (!publicId) return fallback;
-  return `https://tickets.richmix.org.uk/richmix/website/ChooseSeats.aspx?EventInstanceId=${publicId}&resize=true`;
-}
-
-// Rich Mix classifies cinema events via several attributes:
-//   attribute_PrimaryCategory: "Film"
-//   attribute_COGEventProgramme: "FILM"
-//   attribute_AccountCodes: "CIN"
-//   attribute_COGFirstCategory: starts with "CINEMA"
-function isCinemaEvent(event: SpektrixEvent): boolean {
-  const primaryCategory = (event.attributes.attribute_PrimaryCategory as string) || "";
-  const programme = (event.attributes.attribute_COGEventProgramme as string) || "";
-  const accountCodes = (event.attributes.attribute_AccountCodes as string) || "";
-  const firstCategory = (event.attributes.attribute_COGFirstCategory as string) || "";
-
-  const isFilm = (
-    /film/i.test(primaryCategory) ||
-    /film/i.test(programme) ||
-    /^cin/i.test(accountCodes) ||
-    /cinema/i.test(firstCategory)
-  );
-
-  // This is a live talk/show listed in Rich Mix's Cinema section, not a film.
-  if (/^Film Stories Live\b/i.test(event.name)) return false;
-
-  return isFilm;
-}
-
-Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 200, headers: corsHeaders });
+Deno.serve(async (request: Request) => {
+  if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  if (request.method !== "GET" && request.method !== "POST") {
+    return jsonResponse({ success: false, error: "Method not allowed" }, 405);
   }
-
-  const startedAt = new Date();
-  const startedIso = startedAt.toISOString();
-  console.log(`[import-rich-mix] starting at ${startedIso}`);
-
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!supabaseUrl || !serviceRoleKey) {
-    return jsonResponse({ success: false, error: "Missing Supabase credentials." }, 500);
-  }
+  if (!supabaseUrl || !serviceRoleKey) return jsonResponse({ success: false, error: "Missing Supabase credentials" }, 500);
 
-  const supabase = createClient(supabaseUrl, serviceRoleKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-
-  const ctx: ImportRunContext = {
-    supabase,
+  const startedAt = new Date();
+  const context: ImportRunContext = {
+    supabase: createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } }),
     cinemaName: CINEMA_NAME,
-    minScreenings: MIN_SCREENINGS,
+    minScreenings: 1,
     startedAt,
   };
+  const started = await startRun(context);
+  if (started.blocked) return jsonResponse({ success: false, blocked: true, error: "Import already running" }, 409);
+  if (!started.runId) return jsonResponse({ success: false, error: started.error ?? "Could not start import" }, 500);
 
-  const runStart = await startRun(ctx);
-  if (runStart.blocked) {
-    return jsonResponse(
-      { success: false, error: "Another import is already running for Rich Mix.", blocked: true },
-      409
-    );
-  }
-  if (runStart.error || !runStart.runId) {
-    return jsonResponse({ success: false, error: runStart.error ?? "Could not start run." }, 500);
-  }
-  const runId = runStart.runId;
-
+  let found = 0;
   try {
-    const nowUtc = new Date();
-    const result = await fetchAllScreenings(config, isCinemaEvent, {
-      fromDate: nowUtc,
-    });
+    const now = new Date();
+    const programme = await parseRichMixProgramme(now);
+    const records = programme.records;
+    found = records.length;
+    if (programme.confirmedEmpty) {
+      await endRun(context, started.runId, "success", 0, 0);
+      return jsonResponse({
+        success: true,
+        cinema: CINEMA_NAME,
+        status: "officially-confirmed-empty-programme",
+        database_changed: false,
+        events_total: programme.eventsTotal,
+        cinema_events_total: programme.cinemaEventsTotal,
+        screenings_found: 0,
+        screenings_saved: 0,
+      });
+    }
+    if (!records.length) throw new Error("Future Rich Mix events produced no valid screenings");
+    const duplicateReferences = duplicates(records, (record) => record.source_reference);
+    if (duplicateReferences.length) throw new Error(`Duplicate Rich Mix references: ${duplicateReferences.slice(0, 5).join(", ")}`);
+    const duplicateTitleTimes = duplicates(records, (record) => `${record.movie_title}\u0000${record.start_time}`);
+    if (duplicateTitleTimes.length) throw new Error(`Duplicate Rich Mix title/time rows (${duplicateTitleTimes.length})`);
 
-    console.log(
-      `[import-rich-mix] events=${result.eventsCount} cinemaEvents=${result.cinemaEventsCount} instances=${result.instancesFetched} screenings=${result.screenings.length}`
-    );
-
-    if (result.screenings.length < MIN_SCREENINGS) {
-      const msg = `Unusually low screening count (${result.screenings.length}). Database left untouched.`;
-      await endRun(ctx, runId, "failed", result.screenings.length, 0, msg);
-      return jsonResponse(
-        { success: false, error: msg, screenings_found: result.screenings.length },
-        500
-      );
+    const { count: previous, error: countError } = await context.supabase
+      .from("screenings").select("id", { count: "exact", head: true })
+      .eq("cinema_name", CINEMA_NAME).eq("active", true).gt("start_time", now.toISOString());
+    if (countError) throw new Error(`Could not read previous Rich Mix count: ${countError.message}`);
+    if ((previous ?? 0) >= 10 && records.length < Math.ceil((previous ?? 0) * 0.5)) {
+      throw new Error(`Suspicious Rich Mix count drop from ${previous} to ${records.length}`);
     }
 
-    const records: ScreeningRecord[] = result.screenings.map((s) => ({
-      cinema_name: CINEMA_NAME,
-      movie_title: cleanMovieTitle(s.movie_title),
-      start_time: s.start_time_iso,
-      booking_url: richMixBookingUrl(s.event_instance_id, s.booking_url),
-      format: cleanDisplayFormat(s.format),
-      sold_out: s.sold_out,
-      source_reference: s.source_reference,
-      last_seen_at: new Date().toISOString(),
-    }));
-
-    const { saved, errors } = await commitImport(ctx, records, nowUtc);
-    if (errors.length > 0) {
-      const msg = `Import errors: ${errors.join("; ")}`;
-      await endRun(ctx, runId, "failed", result.screenings.length, saved, msg);
-      return jsonResponse(
-        { success: false, error: msg, screenings_found: result.screenings.length, screenings_saved: saved },
-        500
-      );
-    }
-
-    await endRun(ctx, runId, "success", result.screenings.length, saved);
-    console.log(`[import-rich-mix] done: found=${result.screenings.length} saved=${saved}`);
-
+    const committed = await commitImport(context, records, now);
+    if (committed.errors.length) throw new Error(committed.errors.join("; "));
+    await endRun(context, started.runId, "success", found, committed.saved);
     return jsonResponse({
       success: true,
       cinema: CINEMA_NAME,
-      screenings_found: result.screenings.length,
-      screenings_saved: saved,
-      events_total: result.eventsCount,
-      cinema_events: result.cinemaEventsCount,
-      instances_fetched: result.instancesFetched,
-      fetch_errors: result.errors.slice(0, 10),
-      import_started_at: startedIso,
-      import_completed_at: new Date().toISOString(),
-      examples: result.screenings.slice(0, 5).map((s) => ({
-        movie_title: cleanMovieTitle(s.movie_title),
-        start_time: s.start_time_iso,
-        source_reference: s.source_reference,
-        booking_url: richMixBookingUrl(s.event_instance_id, s.booking_url),
-        screen: s.screen_name,
-        venue: s.venue_name,
-        format: s.format,
-        labels: s.labels,
-        sold_out: s.sold_out,
-      })),
+      source: "official-spektrix-v3",
+      events_total: programme.eventsTotal,
+      cinema_events_total: programme.cinemaEventsTotal,
+      future_cinema_events: programme.futureCinemaEvents,
+      instances_fetched: programme.instancesFetched,
+      cancelled_skipped: programme.cancelledSkipped,
+      past_skipped: programme.pastSkipped,
+      screenings_found: found,
+      screenings_saved: committed.saved,
+      previous_active: previous ?? 0,
+      metadata_population: {
+        title_hints: records.filter((record) => record.film_title_hint).length,
+        runtimes: records.filter((record) => record.source_runtime_minutes).length,
+        artwork: records.filter((record) => record.verified_artwork_url).length,
+        screens: records.filter((record) => record.screen_name).length,
+        labels: records.filter((record) => record.screening_label).length,
+        known_availability: records.filter((record) => record.availability_status !== "unknown").length,
+        sold_out: records.filter((record) => record.sold_out).length,
+      },
+      examples: records.slice(0, 5),
     });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await endRun(ctx, runId, "failed", 0, 0, msg);
-    return jsonResponse({ success: false, error: msg }, 500);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await endRun(context, started.runId, "failed", found, 0, message);
+    return jsonResponse({ success: false, cinema: CINEMA_NAME, error: message }, 500);
   }
 });
