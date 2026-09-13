@@ -1,40 +1,142 @@
-import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "npm:@supabase/supabase-js@2.45.4";
+import { londonToUtc } from "../_shared/importSafety.ts";
 
-export type Row={cinema_name:string;movie_title:string;start_time:string;booking_url:string;format:string|null;sold_out:boolean;source_reference:string;last_seen_at:string;active?:boolean};
-export const cors={"Access-Control-Allow-Origin":"*","Access-Control-Allow-Headers":"authorization, x-client-info, apikey, content-type","Content-Type":"application/json"};
-export const reply=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:cors});
-export const clean=(s:unknown)=>String(s??"").replace(/<[^>]*>/g," ").replace(/&amp;/g,"&").replace(/&quot;/g,'"').replace(/&#(?:39|039);/g,"'").replace(/&nbsp;/g," ").replace(/\s+/g," ").trim();
-export function londonIso(y:number,m:number,d:number,h:number,min:number){
-  const probe=new Date(Date.UTC(y,m-1,d,h,min));
-  const parts=new Intl.DateTimeFormat("en-GB",{timeZone:"Europe/London",year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",hourCycle:"h23"}).formatToParts(probe);
-  const get=(t:string)=>Number(parts.find(p=>p.type===t)?.value);
-  const represented=Date.UTC(get("year"),get("month")-1,get("day"),get("hour"),get("minute"));
-  return new Date(probe.getTime()-(represented-probe.getTime())).toISOString();
-}
-export async function runImporter(req:Request,cinema:string,min:number,parse:(now:Date)=>Promise<Row[]>){
-  if(req.method==="OPTIONS")return new Response(null,{headers:cors});
-  const url=Deno.env.get("SUPABASE_URL"),key=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if(!url||!key)return reply({success:false,error:"Missing Supabase credentials"},500);
-  const db=createClient(url,key,{auth:{persistSession:false,autoRefreshToken:false}}),started=new Date();
-  const {data:run,error:startError}=await db.from("import_runs").insert({cinema_name:cinema,status:"running",started_at:started.toISOString()}).select("id").single();
-  if(startError)return reply({success:false,blocked:startError.code==="23505",error:startError.message},startError.code==="23505"?409:500);
-  try{
-    const rows=await parse(new Date());
-    const unique=[...new Map(rows.map(r=>[r.source_reference,r])).values()];
-    if(unique.length!==rows.length)throw new Error("Duplicate source references returned");
-    if(rows.length<min)throw new Error(`Unusually low screening count (${rows.length})`);
-    const now=new Date(),{count:previous}=await db.from("screenings").select("id",{count:"exact",head:true}).eq("cinema_name",cinema).eq("active",true).gt("start_time",now.toISOString());
-    if((previous??0)>=10&&rows.length<Math.ceil((previous??0)*0.5))throw new Error(`Suspicious count drop from ${previous} to ${rows.length}`);
-    const stamp=new Date().toISOString(); rows.forEach(r=>{r.last_seen_at=stamp;r.active=true});
-    const {error:upsertError}=await db.from("screenings").upsert(rows,{onConflict:"source_reference"});
-    if(upsertError)throw upsertError;
-    const {error:pastError}=await db.from("screenings").update({active:false,updated_at:stamp}).eq("cinema_name",cinema).eq("active",true).lt("start_time",now.toISOString());
-    if(pastError)throw pastError;
-    const {error:missingError}=await db.from("screenings").update({active:false,updated_at:stamp}).eq("cinema_name",cinema).eq("active",true).gt("start_time",now.toISOString()).neq("last_seen_at",stamp);
-    if(missingError)throw missingError;
-    await db.from("import_runs").update({status:"success",completed_at:new Date().toISOString(),screenings_found:rows.length,screenings_saved:rows.length}).eq("id",run.id);
-    return reply({success:true,cinema,screenings_found:rows.length,screenings_saved:rows.length,previous_active:previous??0,examples:rows.slice(0,5)});
-  }catch(e){const message=e instanceof Error?e.message:String(e);await db.from("import_runs").update({status:"failed",completed_at:new Date().toISOString(),screenings_found:0,screenings_saved:0,error_message:message}).eq("id",run.id);return reply({success:false,error:message},500)}
+const MONTHS: Record<string, number> = {
+  Jan: 1,
+  Feb: 2,
+  Mar: 3,
+  Apr: 4,
+  May: 5,
+  Jun: 6,
+  Jul: 7,
+  Aug: 8,
+  Sep: 9,
+  Oct: 10,
+  Nov: 11,
+  Dec: 12,
+};
+
+const SOURCE_HEADERS = {
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "Accept-Language": "en-GB,en;q=0.9",
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+};
+
+export interface IcaPagePerformance {
+  startTime: string;
+  screenName: string;
+  sourceText: string;
 }
 
+export interface IcaFilmPage {
+  path: string;
+  url: string;
+  html: string;
+  displayTitle: string;
+  bookingEventId: string;
+  performances: IcaPagePerformance[];
+}
+
+export function decodeHtml(value: string): string {
+  return value
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#(?:39|039);|&apos;/gi, "'")
+    .replace(/&ndash;|&#8211;/gi, "–")
+    .replace(/&mdash;|&#8212;/gi, "—")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+export function cleanHtml(value: unknown): string {
+  return decodeHtml(String(value ?? "").replace(/<[^>]*>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export async function fetchText(url: string, label: string): Promise<string> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const response = await fetch(url, {
+        headers: SOURCE_HEADERS,
+        redirect: "follow",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`${label} returned HTTP ${response.status}`);
+      const body = await response.text();
+      if (body.length < 1_000) throw new Error(`${label} response was unexpectedly small`);
+      return body;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 400));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`${label} request failed`);
+}
+
+export function discoverFilmPaths(html: string): string[] {
+  const paths = [...html.matchAll(/href=["'](\/films\/[^"'#?]+)["']/gi)]
+    .map((match) => match[1].replace(/\/$/, ""))
+    .filter((path) => path.split("/").length === 3);
+  return [...new Set(paths)];
+}
+
+function parsePerformance(block: string): IcaPagePerformance | null {
+  const date = block.match(
+    /(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s*(\d{1,2})\s+([A-Z][a-z]{2})\s+(\d{4})/
+  );
+  const time = block.match(/(\d{1,2}):(\d{2})\s*(am|pm)/i);
+  const screenName = cleanHtml(block.match(/<div class=['"]venue['"]>([\s\S]*?)<\/div>/i)?.[1]);
+  if (!date || !time || !screenName || !MONTHS[date[2]]) return null;
+
+  let hour = Number(time[1]);
+  if (time[3].toLowerCase() === "pm" && hour !== 12) hour += 12;
+  if (time[3].toLowerCase() === "am" && hour === 12) hour = 0;
+  const startTime = londonToUtc(
+    Number(date[3]),
+    MONTHS[date[2]],
+    Number(date[1]),
+    hour,
+    Number(time[2])
+  ).toISOString();
+  return { startTime, screenName, sourceText: cleanHtml(block) };
+}
+
+export function parseFilmPage(baseUrl: string, path: string, html: string): IcaFilmPage | null {
+  const titleHtml = html.match(/<span class=['"]title['"]>([\s\S]*?)<\/span>/i)?.[1];
+  const ogTitle = html.match(/<meta\s+property=["']og:title["']\s+content=["']ICA \| ([^"']+)["']/i)?.[1];
+  const displayTitle = cleanHtml(titleHtml ?? ogTitle ?? "");
+  const bookingEventId = html.match(/location\.href=["']\/book\/(\d+)["']/i)?.[1] ?? "";
+  if (!displayTitle || !bookingEventId) return null;
+
+  const section = html.match(/<div class=["']performance-list["']>([\s\S]*?)<\/div>\s*<details/i)?.[1] ?? "";
+  const rawBlocks = [...section.matchAll(
+    /<div class=['"]performance future['"]>([\s\S]*?)(?=<div class=['"]performance future['"]>|$)/gi
+  )];
+  const performances: IcaPagePerformance[] = [];
+  for (const match of rawBlocks) {
+    const performance = parsePerformance(match[1]);
+    if (!performance) throw new Error(`Could not parse an ICA performance on ${path}`);
+    performances.push(performance);
+  }
+
+  return {
+    path,
+    url: `${baseUrl}${path}`,
+    html,
+    displayTitle,
+    bookingEventId,
+    performances,
+  };
+}
+
+export function performanceKey(startTime: string, screenName: string): string {
+  return `${new Date(startTime).toISOString()}|${screenName.trim().toLowerCase()}`;
+}
