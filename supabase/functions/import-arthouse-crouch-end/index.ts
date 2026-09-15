@@ -62,7 +62,16 @@ function parse24hTime(t: string): { hour: number; minute: number } | null {
 
 // Parse an ArtHouse programme date like "Fri 24 Jul" → { day, month } (year inferred).
 function parseArtHouseDate(text: string, nowLondon: Date): { day: number; month: number; year: number } | null {
-  const m = text.trim().match(/^[A-Za-z]{3}\s+(\d{1,2})\s+([A-Za-z]{3})$/);
+  const value = text.trim();
+  if (/^Today$/i.test(value)) {
+    return {
+      day: nowLondon.getDate(),
+      month: nowLondon.getMonth() + 1,
+      year: nowLondon.getFullYear(),
+    };
+  }
+
+  const m = value.match(/^[A-Za-z]{3}\s+(\d{1,2})\s+([A-Za-z]{3})$/);
   if (!m) return null;
   const day = parseInt(m[1], 10);
   const monthName = m[2].toLowerCase();
