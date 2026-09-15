@@ -137,16 +137,17 @@ function parseProgrammePage(html: string, nowLondon: Date, eventUrl: string): Pa
       continue;
     }
 
-    // Each performance: <a href="...TcsPerformance_{id}" ...><span class="prog-times">{time}<span class="prog-notes">{notes}</span><small class="{status}"></small></span></a>
+    // Accept the official Savoy booking anchor even when ArtHouse adds normal
+    // attributes/whitespace or omits empty notes/status elements.
     const perfRegex =
-      /<a href="([^"]*TcsPerformance_(\d+)[^"]*)"[^>]*><span class="prog-times">(\d{1,2}:\d{2})<span class="prog-notes">([^<]*)<\/span><small class="([^"]*)"><\/small><\/span><\/a>/g;
+      /<a\b[^>]*\bhref="([^"]*TcsPerformance_(\d+)[^"]*)"[^>]*>\s*<span\b[^>]*class="[^"]*\bprog-times\b[^"]*"[^>]*>\s*(\d{1,2}:\d{2})\s*(?:<span\b[^>]*class="[^"]*\bprog-notes\b[^"]*"[^>]*>([\s\S]*?)<\/span>)?\s*(?:<small\b[^>]*class="([^"]*)"[^>]*>[\s\S]*?<\/small>)?\s*<\/span>\s*<\/a>/gi;
     let perfMatch: RegExpExecArray | null;
     while ((perfMatch = perfRegex.exec(timesBody)) !== null) {
       const bookingUrl = perfMatch[1];
       const performanceId = perfMatch[2];
       const timeText = perfMatch[3];
-      const notes = perfMatch[4].trim();
-      const statusClass = perfMatch[5];
+      const notes = stripTags(perfMatch[4] ?? "").trim();
+      const statusClass = perfMatch[5] ?? "";
       const labels = decodeEntities(notes);
       const soldOut = /soldout|sold out/i.test(statusClass);
       const openForSale = /openforsale|open.for.sale/i.test(statusClass);
@@ -208,7 +209,12 @@ function parseProgrammePage(html: string, nowLondon: Date, eventUrl: string): Pa
     }
   }
 
-  const sourceIds = new Set(Array.from(html.matchAll(/TcsPerformance_(\d+)/g), (m) => m[1]));
+  const sourceIds = new Set(
+    Array.from(
+      html.matchAll(/<a\b[^>]*\bhref="[^"]*TcsPerformance_(\d+)[^"]*"[^>]*>/gi),
+      (m) => m[1]
+    )
+  );
   const parsedIds = new Set(results.map((p) => p.performance_id));
   if ([...sourceIds].some((id) => !parsedIds.has(id))) {
     throw new Error(`Unparsed performance links: ${eventUrl}`);
