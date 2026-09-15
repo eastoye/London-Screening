@@ -1,5 +1,6 @@
 import {normaliseScreeningTags,normaliseProjectionFormats} from "../_shared/screeningMetadata.ts";
 import type {ScreeningRecord} from "../_shared/importSafety.ts";
+
 // Movie JSON-LD supplies basic credits. The public API's explicit releaseDate
 // supplies the year: the page's dateCreated is a different field.
 export function movieMetadata(html:string,eventUrl:string){
@@ -34,6 +35,95 @@ async function publicQuery(query:string):Promise<Record<string,any>> {
  return body.data;
 }
 
+const MONTHS:Record<string,number>={
+ january:1,february:2,march:3,april:4,may:5,june:6,
+ july:7,august:8,september:9,october:10,november:11,december:12,
+};
+
+function htmlWallClockForShowing(html:string,showingId:string){
+ const escaped=showingId.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
+ const match=html.match(new RegExp(
+  `<a\\b[^>]*href=["'][^"']*checkout\\/showing\\/[^"']*\\/${escaped}["'][^>]*>([^<]+)<\\/a>`,
+  'i',
+ ));
+ if(!match)return null;
+ const parsed=match[1].trim().match(
+  /^([A-Za-z]+)\s+(\d{1,2}),\s+(\d{1,2}):(\d{2})\s*(am|pm)$/i
+ );
+ if(!parsed)return null;
+ const month=MONTHS[parsed[1].toLowerCase()];
+ if(!month)return null;
+ let hour=Number(parsed[3]);
+ const minute=Number(parsed[4]);
+ const ampm=parsed[5].toLowerCase();
+ if(ampm==='am'&&hour===12)hour=0;
+ if(ampm==='pm'&&hour!==12)hour+=12;
+ return {month,day:Number(parsed[2]),hour,minute};
+}
+
+function apiLondonWallClock(value:unknown){
+ if(typeof value!=='string')return null;
+ const date=new Date(value);
+ if(Number.isNaN(date.getTime()))return null;
+ const parts=new Intl.DateTimeFormat('en-GB',{
+  timeZone:'Europe/London',
+  month:'numeric',
+  day:'numeric',
+  hour:'numeric',
+  minute:'2-digit',
+  hourCycle:'h23',
+ }).formatToParts(date);
+ const get=(type:string)=>Number(parts.find(part=>part.type===type)?.value);
+ const month=get('month');
+ const day=get('day');
+ const hour=get('hour');
+ const minute=get('minute');
+ if(!month||!day||Number.isNaN(hour)||Number.isNaN(minute))return null;
+ return {month,day,hour,minute};
+}
+
+function sameWallClock(
+ a:{month:number;day:number;hour:number;minute:number},
+ b:{month:number;day:number;hour:number;minute:number},
+){
+ return a.month===b.month&&a.day===b.day&&a.hour===b.hour&&a.minute===b.minute;
+}
+
+// Chiswick movie pages are served through Netlify Edge and can briefly lag the
+// uncached public GraphQL showing data after a schedule edit. On an exact-ID
+// disagreement, re-read only that official movie page. We still require the
+// refreshed HTML wall-clock and API wall-clock to agree before accepting it.
+async function confirmRefreshedHtmlTime(
+ row:ScreeningRecord,
+ showing:{id:unknown;time:unknown},
+):Promise<boolean>{
+ if(!row.source_event_url||typeof showing.id!=='string')return false;
+ const apiTime=apiLondonWallClock(showing.time);
+ if(!apiTime)return false;
+
+ for(let attempt=0;attempt<2;attempt++){
+  await new Promise(resolve=>setTimeout(resolve,750));
+  const response=await fetch(row.source_event_url,{
+   headers:{
+    'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+    Accept:'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language':'en-GB,en;q=0.9',
+   },
+   redirect:'follow',
+   signal:AbortSignal.timeout(12000),
+  });
+  if(!response.ok)continue;
+  const htmlTime=htmlWallClockForShowing(await response.text(),showing.id);
+  if(htmlTime&&sameWallClock(htmlTime,apiTime)){
+   const confirmed=new Date(String(showing.time));
+   if(Number.isNaN(confirmed.getTime()))return false;
+   row.start_time=confirmed.toISOString();
+   return true;
+  }
+ }
+ return false;
+}
+
 // Batch requests use the same public site/circuit context as Chiswick's app.
 // Existing HTML performance IDs and times remain authoritative for coverage.
 export async function enrichChiswick(records:ScreeningRecord[]):Promise<void>{
@@ -58,7 +148,14 @@ export async function enrichChiswick(records:ScreeningRecord[]):Promise<void>{
     if(matches.length>1)throw new Error('Chiswick duplicate API showing ID');
     const showing=matches[0];
     if(!showing)continue;
-    if(Date.parse(showing.time)!==Date.parse(row.start_time))throw new Error('Chiswick HTML/API performance time disagreement');
+    if(Date.parse(showing.time)!==Date.parse(row.start_time)){
+     const confirmed=await confirmRefreshedHtmlTime(row,showing);
+     if(!confirmed){
+      throw new Error(
+       `Chiswick HTML/API performance time disagreement: ${row.source_reference} HTML=${row.start_time} API=${String(showing.time)}`
+      );
+     }
+    }
     const labels:string[]=[...new Set<string>((showing.showingBadges||[]).map((b:any)=>String(b.displayName||b.title||'').trim()).filter(Boolean))];
     row.screen_name=typeof showing.screen?.name==='string'?showing.screen.name:null;
     row.screening_label=labels.join('; ')||null;
