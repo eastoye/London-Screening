@@ -1,6 +1,9 @@
 export const CINEMA_NAME = "Rich Mix";
 export const CINEMA_URL = "https://richmix.org.uk/cinema/";
 const API_BASE = "https://system.spektrix.com/richmix/api/v3";
+const PUBLIC_EVENT_LIST_URL = "https://system.spektrix.com/richmix/website/EventList.aspx";
+const MAX_PUBLIC_MONTHS = 24;
+const RECENT_FILM_WINDOW_MS = 370 * 24 * 60 * 60 * 1000;
 
 export interface RichMixEvent {
   id: string;
@@ -121,11 +124,131 @@ export async function fetchInstancesForEvents(
   return result;
 }
 
-export async function officialPageConfirmsEmptyProgramme(): Promise<boolean> {
-  const response = await fetchResponse(CINEMA_URL, "text/html,application/xhtml+xml");
+function londonYearMonth(now: Date): { year: number; month: number } {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    year: "numeric",
+    month: "numeric",
+  }).formatToParts(now);
+  const year = Number(parts.find((part) => part.type === "year")?.value);
+  const month = Number(parts.find((part) => part.type === "month")?.value);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || month < 1 || month > 12) {
+    throw new Error("Could not determine current Europe/London month for Rich Mix completeness check");
+  }
+  return { year, month };
+}
+
+function monthSelector(year: number, month: number): string {
+  return `${year}${month}`;
+}
+
+function parseMonthSelector(value: string): { selector: string; ordinal: number } | null {
+  const match = value.match(/^(\d{4})(\d{1,2})$/);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (year < 2000 || year > 2200 || month < 1 || month > 12) return null;
+  return { selector: value, ordinal: year * 12 + month };
+}
+
+function publicEventId(eventId: string): string | null {
+  return eventId.match(/^(\d+)/)?.[1] ?? null;
+}
+
+async function fetchPublicEventListPage(selector: string): Promise<string> {
+  const url = `${PUBLIC_EVENT_LIST_URL}?MonthSelect=${encodeURIComponent(selector)}&SortBy=Date&resize=true`;
+  const response = await fetchResponse(url, "text/html,application/xhtml+xml");
   const html = await response.text();
-  if (html.length < 20_000) throw new Error(`Rich Mix cinema page was unexpectedly short (${html.length} bytes)`);
-  return /There are no films coming soon/i.test(html);
+  if (html.length < 20_000) {
+    throw new Error(`Rich Mix public Spektrix event list was unexpectedly short (${html.length} bytes)`);
+  }
+  if (!/Displaying events between|There are no events in this month/i.test(html)) {
+    throw new Error("Rich Mix public Spektrix event list did not contain its expected programme marker");
+  }
+  return html;
+}
+
+function publicEventIds(html: string): Set<string> {
+  return new Set(
+    Array.from(html.matchAll(/EventDetails\.aspx\?EventId=(\d+)/gi), (match) => match[1]),
+  );
+}
+
+function futureMonthSelectors(html: string, now: Date): string[] {
+  const current = londonYearMonth(now);
+  const currentOrdinal = current.year * 12 + current.month;
+  const selectors = new Map<string, number>();
+  selectors.set(monthSelector(current.year, current.month), currentOrdinal);
+
+  for (const match of html.matchAll(/MonthSelect=(\d{5,6})/gi)) {
+    const parsed = parseMonthSelector(match[1]);
+    if (parsed && parsed.ordinal >= currentOrdinal) selectors.set(parsed.selector, parsed.ordinal);
+  }
+
+  if (selectors.size > MAX_PUBLIC_MONTHS) {
+    throw new Error(`Rich Mix public Spektrix event list exposed too many future months (${selectors.size})`);
+  }
+
+  return [...selectors.entries()]
+    .sort((a, b) => a[1] - b[1])
+    .map(([selector]) => selector);
+}
+
+async function publicSpektrixFutureEventIds(now: Date): Promise<Set<string>> {
+  const current = londonYearMonth(now);
+  const currentSelector = monthSelector(current.year, current.month);
+  const firstPage = await fetchPublicEventListPage(currentSelector);
+  const selectors = futureMonthSelectors(firstPage, now);
+  const ids = publicEventIds(firstPage);
+
+  for (const selector of selectors) {
+    if (selector === currentSelector) continue;
+    const html = await fetchPublicEventListPage(selector);
+    for (const id of publicEventIds(html)) ids.add(id);
+  }
+  return ids;
+}
+
+// The Rich Mix WordPress cinema page is currently protected by an anti-bot
+// challenge and returns HTTP 403 to the importer runtime. For the zero-programme
+// safety check, use two official Spektrix surfaces instead:
+//   1. the v3 API taxonomy must contain no future cinema/film events; and
+//   2. the public Spektrix "What's On" pages must contain no future public event
+//      that is absent from that API catalogue.
+// A recent genuine film record is also required so a future ticketing-system or
+// taxonomy migration cannot silently turn an empty API result into confirmation.
+export async function officialPageConfirmsEmptyProgramme(): Promise<boolean> {
+  const now = new Date();
+  const events = await fetchEvents();
+  const futureEvents = events.filter((event) => eventIsFuture(event, now));
+  if (futureEvents.some(isCinemaEvent)) return false;
+
+  const recentFilm = events.some((event) => {
+    if (!isCinemaEvent(event)) return false;
+    const last = new Date(event.lastInstanceDateTimeUtc);
+    if (!Number.isFinite(last.getTime()) || last > now) return false;
+    return now.getTime() - last.getTime() <= RECENT_FILM_WINDOW_MS;
+  });
+  if (!recentFilm) {
+    throw new Error("Rich Mix zero-programme check could not find a recent film record in Spektrix");
+  }
+
+  const apiFutureIds = new Set<string>();
+  for (const event of futureEvents) {
+    const id = publicEventId(event.id);
+    if (!id) throw new Error(`Rich Mix future event ${event.id} had no public Spektrix event ID`);
+    apiFutureIds.add(id);
+  }
+
+  const publicFutureIds = await publicSpektrixFutureEventIds(now);
+  const publicOnly = [...publicFutureIds].filter((id) => !apiFutureIds.has(id));
+  if (publicOnly.length) {
+    throw new Error(
+      `Rich Mix public Spektrix programme contained events absent from the API catalogue: ${publicOnly.slice(0, 5).join(", ")}`,
+    );
+  }
+
+  return true;
 }
 
 export function publicBookingUrl(instanceId: string): string | null {
