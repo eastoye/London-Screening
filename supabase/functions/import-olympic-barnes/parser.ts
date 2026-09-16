@@ -518,7 +518,15 @@ export function enrichScreening(
     Math.abs(new Date(performance.startTimeIso).getTime() - new Date(core.startTimeIso).getTime()) > 60_000
   );
   const soldOut = core.soldOut || performance?.availability === "out_of_stock";
-  const available = !soldOut && (performance?.availability === "in_stock" || core.availabilityStatus === "available");
+
+  // Detail JSON-LD can report InStock for member-gated or otherwise disabled
+  // performances. It may confirm stock, but must not override the listing's
+  // decision not to expose a usable public booking URL.
+  const available = Boolean(
+    !soldOut &&
+    core.bookingUrl &&
+    (performance?.availability === "in_stock" || core.availabilityStatus === "available")
+  );
   const bookingUrl = available ? core.bookingUrl : null;
 
   return {
