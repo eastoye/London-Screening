@@ -18,6 +18,12 @@ const RATIO_GUARD_MIN_EXISTING = 10;
 const MIN_EXPECTED_RATIO = 0.5;
 const FETCH_TIMEOUT_MS = 25_000;
 const DETAIL_CONCURRENCY = 8;
+const PROGRAMME_FETCH_ATTEMPTS = 3;
+const PROGRAMME_RETRY_DELAY_MS = 750;
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 async function fetchHtml(url: string): Promise<string> {
   const controller = new AbortController();
@@ -39,6 +45,60 @@ async function fetchHtml(url: string): Promise<string> {
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function validateProgrammeHtml(programmeHtml: string): void {
+  if (
+    programmeHtml.length < 500_000 ||
+    !programmeHtml.includes("showCard") ||
+    !programmeHtml.includes("booking_click")
+  ) {
+    throw new Error(
+      "BFI programme response was incomplete or no longer matched the expected page structure.",
+    );
+  }
+
+  const discovery = discoverImaxProgrammeCards(programmeHtml);
+  if (discovery.errors.length) {
+    throw new Error(
+      `Programme discovery failed: ${discovery.errors.slice(0, 8).join(" | ")}`,
+    );
+  }
+}
+
+function programmeAttemptUrl(attempt: number): string {
+  if (attempt === 1) return PROGRAMME_URL;
+
+  const url = new URL(PROGRAMME_URL);
+  url.searchParams.set(
+    "_london_screenings_retry",
+    `${Date.now()}-${attempt}`,
+  );
+  return url.href;
+}
+
+async function fetchValidatedProgrammeHtml(): Promise<string> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 1; attempt <= PROGRAMME_FETCH_ATTEMPTS; attempt++) {
+    try {
+      const programmeHtml = await fetchHtml(programmeAttemptUrl(attempt));
+      validateProgrammeHtml(programmeHtml);
+      return programmeHtml;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      console.warn(
+        `[import-bfi-imax] programme attempt ${attempt}/${PROGRAMME_FETCH_ATTEMPTS} failed: ${lastError.message}`,
+      );
+
+      if (attempt < PROGRAMME_FETCH_ATTEMPTS) {
+        await sleep(PROGRAMME_RETRY_DELAY_MS * attempt);
+      }
+    }
+  }
+
+  throw lastError ?? new Error("BFI programme fetch failed.");
 }
 
 async function fetchDetailPages(urls: string[]): Promise<Map<string, string>> {
@@ -103,12 +163,8 @@ Deno.serve(async (req: Request) => {
   let found = 0;
 
   try {
-    const programmeHtml = await fetchHtml(PROGRAMME_URL);
-    if (programmeHtml.length < 500_000 || !programmeHtml.includes("showCard") || !programmeHtml.includes("booking_click")) {
-      throw new Error("BFI programme response was incomplete or no longer matched the expected page structure.");
-    }
+    const programmeHtml = await fetchValidatedProgrammeHtml();
     const discovery = discoverImaxProgrammeCards(programmeHtml);
-    if (discovery.errors.length) throw new Error(`Programme discovery failed: ${discovery.errors.slice(0, 8).join(" | ")}`);
     const detailPages = await fetchDetailPages([...new Set(discovery.cards.map((card) => card.eventUrl))]);
     const parsed = parseBfiImax(programmeHtml, detailPages, startedAt);
     found = parsed.screenings.length;
