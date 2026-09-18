@@ -77,19 +77,59 @@ function programmeAttemptUrl(attempt: number): string {
   return url.href;
 }
 
-async function fetchValidatedProgrammeHtml(): Promise<string> {
+async function fetchParsedProgramme(
+  ctx: ImportRunContext,
+  startedAt: Date,
+): Promise<ReturnType<typeof parseBfiImax>> {
   let lastError: Error | null = null;
 
   for (let attempt = 1; attempt <= PROGRAMME_FETCH_ATTEMPTS; attempt++) {
     try {
-      const programmeHtml = await fetchHtml(programmeAttemptUrl(attempt));
+      const programmeHtml = await fetchHtml(
+        programmeAttemptUrl(attempt),
+      );
+
       validateProgrammeHtml(programmeHtml);
-      return programmeHtml;
+
+      const discovery = discoverImaxProgrammeCards(programmeHtml);
+
+      const detailPages = await fetchDetailPages([
+        ...new Set(
+          discovery.cards.map((card) => card.eventUrl),
+        ),
+      ]);
+
+      const parsed = parseBfiImax(
+        programmeHtml,
+        detailPages,
+        startedAt,
+      );
+
+      if (parsed.errors.length) {
+        throw new Error(
+          `Programme parse failed: ${
+            parsed.errors.slice(0, 8).join(" | ")
+          }`,
+        );
+      }
+
+      await assertNoAmbiguousFutureDisappearances(
+        ctx,
+        parsed.screenings,
+        startedAt,
+        new Set(
+          discovery.cards.map((card) => card.eventUrl),
+        ),
+      );
+
+      return parsed;
     } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
+      lastError = error instanceof Error
+        ? error
+        : new Error(String(error));
 
       console.warn(
-        `[import-bfi-imax] programme attempt ${attempt}/${PROGRAMME_FETCH_ATTEMPTS} failed: ${lastError.message}`,
+        `[import-bfi-imax] programme pipeline attempt ${attempt}/${PROGRAMME_FETCH_ATTEMPTS} failed: ${lastError.message}`,
       );
 
       if (attempt < PROGRAMME_FETCH_ATTEMPTS) {
@@ -98,18 +138,75 @@ async function fetchValidatedProgrammeHtml(): Promise<string> {
     }
   }
 
-  throw lastError ?? new Error("BFI programme fetch failed.");
+  throw lastError ??
+    new Error("BFI programme pipeline failed.");
 }
 
-async function fetchDetailPages(urls: string[]): Promise<Map<string, string>> {
-  const pages = new Map<string, string>();
-  for (let index = 0; index < urls.length; index += DETAIL_CONCURRENCY) {
-    const batch = urls.slice(index, index + DETAIL_CONCURRENCY);
-    const results = await Promise.all(batch.map(async (url) => [url, await fetchHtml(url)] as const));
-    for (const [url, html] of results) pages.set(url, html);
+async function assertNoAmbiguousFutureDisappearances(
+  ctx: ImportRunContext,
+  screenings: ReturnType<typeof parseBfiImax>["screenings"],
+  nowUtc: Date,
+  discoveredEventUrls: ReadonlySet<string>,
+): Promise<void> {
+  const importedEventTimes = new Set(
+    screenings.map((screening) =>
+      `${screening.sourceEventUrl}|${
+        new Date(screening.startTimeIso).toISOString()
+      }`
+    ),
+  );
+
+  const { data, error } = await ctx.supabase
+    .from("screenings")
+    .select(
+      "movie_title,start_time,source_event_url",
+    )
+    .eq("cinema_name", CINEMA_NAME)
+    .eq("active", true)
+    .gt("start_time", nowUtc.toISOString());
+
+  if (error) {
+    throw new Error(
+      `Could not validate BFI IMAX deactivation safety: ${error.message}`,
+    );
   }
-  if (pages.size !== urls.length) throw new Error(`Fetched ${pages.size} of ${urls.length} required BFI detail pages`);
-  return pages;
+
+  const ambiguous = (data ?? []).filter((row) => {
+    const eventUrl =
+      typeof row.source_event_url === "string"
+        ? row.source_event_url
+        : "";
+
+    if (
+      !eventUrl ||
+      !discoveredEventUrls.has(eventUrl)
+    ) {
+      return false;
+    }
+
+    const key =
+      `${eventUrl}|${new Date(row.start_time).toISOString()}`;
+
+    return !importedEventTimes.has(key);
+  });
+
+  if (ambiguous.length) {
+    const examples = ambiguous
+      .slice(0, 5)
+      .map(
+        (row) =>
+          `${row.movie_title} @ ${
+            new Date(row.start_time).toISOString()
+          }`,
+      )
+      .join(" | ");
+
+    throw new Error(
+      `Source completeness guard blocked import: ${ambiguous.length} previously active future screening(s) disappeared while their BFI event page is still present${
+        examples ? ` (${examples})` : ""
+      }.`,
+    );
+  }
 }
 
 async function previousActiveCount(ctx: ImportRunContext, nowUtc: Date): Promise<number> {

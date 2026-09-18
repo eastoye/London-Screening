@@ -225,42 +225,121 @@ export function parseDetailPage(html: string): DetailData {
   };
 }
 
-function parseImaxListingPerformances(card: ProgrammeCard, now: Date): { rows: ListingPerformance[]; errors: string[]; sourceCount: number } {
+function parseImaxListingPerformances(
+  card: ProgrammeCard,
+  now: Date,
+): { rows: ListingPerformance[]; errors: string[]; sourceCount: number } {
   const rows: ListingPerformance[] = [];
   const errors: string[] = [];
   let sourceCount = 0;
-  const sectionRe = /<h4\b[^>]*aria-label="((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+\d{1,2}\s+[A-Za-z]+)"[^>]*>[\s\S]*?<ul\b[^>]*>([\s\S]*?)<\/ul>/gi;
+  let parsedBookingCount = 0;
+
+  const sectionRe =
+    /<h4\b[^>]*aria-label="((?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+\d{1,2}\s+[A-Za-z]+)"[^>]*>[\s\S]*?<ul\b[^>]*>([\s\S]*?)<\/ul>/gi;
+
   let section: RegExpExecArray | null;
+
   while ((section = sectionRe.exec(card.body))) {
+    const dateText = section[1];
+
     for (const rawLi of section[2].split(/<li\b[^>]*>/i).slice(1)) {
       const li = rawLi.split("</li>")[0];
-      const link = li.match(/<a\b[^>]*href="([^"]+)"[^>]*aria-label="([^"]+)"[^>]*data-ga-event="booking_click"[^>]*>/i);
-      if (!link) continue;
-      const label = decodeEntities(link[2]);
-      const tagText = cleanText([...li.matchAll(/<div\b[^>]*class="tagsWrapper"[^>]*>([\s\S]*?)<\/div>/gi)].map((item) => item[1]).join(" "));
-      if (!/BFI IMAX|IMAX, Waterloo/i.test(label)) continue;
+
+      const link = li.match(
+        /<a\b[^>]*href="([^"]+)"[^>]*aria-label="([^"]+)"[^>]*data-ga-event="booking_click"[^>]*>/i,
+      );
+
+      const disabled = li.match(
+        /<button\b[^>]*aria-disabled="true"[^>]*>(\d{1,2}:\d{2})<\/button>/i,
+      );
+
+      const tagText = cleanText(
+        [...li.matchAll(
+          /<div\b[^>]*class="tagsWrapper"[^>]*>([\s\S]*?)<\/div>/gi,
+        )]
+          .map((item) => item[1])
+          .join(" "),
+      );
+
+      const linkedLabel = link ? decodeEntities(link[2]) : "";
+      const linkedImax = Boolean(
+        link && /BFI IMAX|IMAX, Waterloo/i.test(linkedLabel),
+      );
+
+      // Sold-out BFI performances are rendered as disabled buttons rather than
+      // booking links. Only accept that representation when the performance
+      // itself is explicitly labelled IMAX, preserving Southbank separation.
+      const disabledImax = Boolean(
+        !link && disabled && /\bIMAX\b/i.test(tagText),
+      );
+
+      if (!linkedImax && !disabledImax) continue;
+
+      if (linkedImax) parsedBookingCount++;
       sourceCount++;
+
+      const label = linkedImax
+        ? linkedLabel
+        : `${disabled![1]} ${dateText} BFI IMAX, Waterloo`;
+
       const startTimeIso = parseListingDateTime(label, now);
-      if (!startTimeIso) { errors.push(`${card.title}: unparseable performance date '${label}'.`); continue; }
+      if (!startTimeIso) {
+        errors.push(
+          `${card.title}: unparseable performance date '${label}'.`,
+        );
+        continue;
+      }
+
+      const rawBookingUrl = linkedImax && link
+        ? safeUrl(link[1], TICKET_ORIGIN)
+        : null;
+
+      if (linkedImax && !rawBookingUrl) {
+        errors.push(
+          `${card.title}: IMAX booking link was not a safe BFI ticket URL.`,
+        );
+        continue;
+      }
+
       if (new Date(startTimeIso) <= now) continue;
-      const screenMatch = label.match(/(?:Screen\s+(.+)|((?:BFI )?IMAX, Waterloo))$/i);
+
+      const screenMatch = linkedImax
+        ? linkedLabel.match(
+          /(?:Screen\s+(.+)|((?:BFI )?IMAX, Waterloo))$/i,
+        )
+        : null;
+
       rows.push({
         card,
         startTimeIso,
-        rawBookingUrl: safeUrl(link[1], TICKET_ORIGIN),
-        soldOut: /\bSold out\b/i.test(li),
-        screenName: cleanText(screenMatch?.[1] ?? screenMatch?.[2] ?? "") || null,
+        rawBookingUrl,
+        soldOut: disabledImax || /\bSold out\b/i.test(li),
+        screenName: disabledImax
+          ? "BFI IMAX, Waterloo"
+          : cleanText(
+            screenMatch?.[1] ?? screenMatch?.[2] ?? "",
+          ) || null,
         label: tagText,
       });
     }
   }
-  const bookingClickCount = [...card.body.matchAll(/<a\b[^>]*aria-label="([^"]+)"[^>]*data-ga-event="booking_click"[^>]*>/gi)]
-    .filter((match) => /BFI IMAX|IMAX, Waterloo/i.test(decodeEntities(match[1])))
+
+  const bookingClickCount = [
+    ...card.body.matchAll(
+      /<a\b[^>]*aria-label="([^"]+)"[^>]*data-ga-event="booking_click"[^>]*>/gi,
+    ),
+  ]
+    .filter((match) =>
+      /BFI IMAX|IMAX, Waterloo/i.test(decodeEntities(match[1]))
+    )
     .length;
-  const parsedBookingCount = rows.filter((row) => row.rawBookingUrl).length;
+
   if (parsedBookingCount !== bookingClickCount) {
-    errors.push(`${card.title}: parsed ${parsedBookingCount} of ${bookingClickCount} booking links.`);
+    errors.push(
+      `${card.title}: parsed ${parsedBookingCount} of ${bookingClickCount} booking links.`,
+    );
   }
+
   return { rows, errors, sourceCount };
 }
 
