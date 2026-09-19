@@ -1,7 +1,102 @@
-import {clean,londonIso,runImporter,type Row} from "./import-common.ts";
-const CINEMA="Regent Street Cinema",BASE="https://www.regentstreetcinema.com",LIST=`${BASE}/now-playing/`;
-const months:Record<string,number>={Jan:1,Feb:2,Mar:3,Apr:4,May:5,Jun:6,Jul:7,Aug:8,Sep:9,Oct:10,Nov:11,Dec:12};
-async function parse(now:Date):Promise<Row[]>{const list=await(await fetch(LIST)).text();if(list.length<5000)throw new Error("Regent programme response too small");const urls=[...new Set([...list.matchAll(/href="https:\/\/www\.regentstreetcinema\.com\/movie\/([^"]+)"/g)].map(m=>`${BASE}/movie/${m[1]}`))],rows:Row[]=[];
- for(let i=0;i<urls.length;i+=20){for(const page of await Promise.all(urls.slice(i,i+20).map(async url=>({url,html:await(await fetch(url)).text()})))){const title=clean(page.html.match(/"@type":"Movie","name":"([^"]+)"/)?.[1]??page.html.match(/<meta property="og:title" content="([^"]+)"/)?.[1]);for(const m of page.html.matchAll(/href="(https:\/\/www\.regentstreetcinema\.com\/checkout\/showing\/[^"/]+\/(\d+))"[^>]*>\s*([A-Z][a-z]+)\s+(\d{1,2}),\s*(\d{1,2}):(\d{2})\s*(am|pm)</gi)){const month=months[m[3].slice(0,3)],day=Number(m[4]);let year=now.getUTCFullYear();if(month<=2&&now.getUTCMonth()+1>=11)year++;let h=Number(m[5]);if(m[7].toLowerCase()==="pm"&&h!==12)h+=12;if(m[7].toLowerCase()==="am"&&h===12)h=0;const iso=londonIso(year,month,day,h,Number(m[6]));if(new Date(iso)<=now)continue;const formats=[/70mm/i.test(title)?"70mm":"",/35mm/i.test(title)?"35mm":"",/\b4K\b/i.test(title)?"4K":"",/\bIMAX\b/i.test(title)?"IMAX":"",/\b3D\b/i.test(title)?"3D":"",/Dolby Atmos/i.test(title)?"Dolby Atmos":"",/\bDCP\b/i.test(title)?"DCP":""].filter(Boolean);rows.push({cinema_name:CINEMA,movie_title:title,start_time:iso,booking_url:m[1],format:formats.join(", ")||null,sold_out:false,source_reference:`regent:${m[2]}`,last_seen_at:now.toISOString()})}}}return rows}
-Deno.serve(req=>runImporter(req,CINEMA,2,parse));
+import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { createClient } from "npm:@supabase/supabase-js@2.45.4";
+import {
+  commitImport,
+  corsHeaders,
+  endRun,
+  jsonResponse,
+  startRun,
+  type ImportRunContext,
+  type ScreeningRecord,
+} from "../_shared/importSafety.ts";
+import { CINEMA_NAME, MIN_SCREENINGS, parseRegentScreenings } from "./parser.ts";
 
+function duplicateValues(records: ScreeningRecord[], key: (record: ScreeningRecord) => string): string[] {
+  const counts = new Map<string, number>();
+  for (const record of records) counts.set(key(record), (counts.get(key(record)) ?? 0) + 1);
+  return [...counts.entries()].filter(([, count]) => count > 1).map(([value]) => value);
+}
+
+Deno.serve(async (request: Request) => {
+  if (request.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
+  if (request.method !== "GET" && request.method !== "POST") {
+    return jsonResponse({ success: false, error: "Method not allowed" }, 405);
+  }
+
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (!supabaseUrl || !serviceRoleKey) {
+    return jsonResponse({ success: false, error: "Missing Supabase credentials" }, 500);
+  }
+
+  const startedAt = new Date();
+  const context: ImportRunContext = {
+    supabase: createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    }),
+    cinemaName: CINEMA_NAME,
+    minScreenings: MIN_SCREENINGS,
+    startedAt,
+  };
+  const started = await startRun(context);
+  if (started.blocked) return jsonResponse({ success: false, blocked: true, error: "Import already running" }, 409);
+  if (!started.runId) return jsonResponse({ success: false, error: started.error ?? "Could not start import" }, 500);
+
+  let found = 0;
+  try {
+    const now = new Date();
+    const records = await parseRegentScreenings(now);
+    found = records.length;
+    if (records.length < MIN_SCREENINGS) {
+      throw new Error(`Unusually low Regent screening count (${records.length})`);
+    }
+
+    const duplicateReferences = duplicateValues(records, (record) => record.source_reference);
+    if (duplicateReferences.length) {
+      throw new Error(`Duplicate Regent source references: ${duplicateReferences.slice(0, 5).join(", ")}`);
+    }
+    const duplicateTitleTimes = duplicateValues(records, (record) => `${record.movie_title}\u0000${record.start_time}`);
+    if (duplicateTitleTimes.length) {
+      throw new Error(`Duplicate Regent title/time rows (${duplicateTitleTimes.length})`);
+    }
+
+    const { count: previous, error: countError } = await context.supabase
+      .from("screenings")
+      .select("id", { count: "exact", head: true })
+      .eq("cinema_name", CINEMA_NAME)
+      .eq("active", true)
+      .gt("start_time", now.toISOString());
+    if (countError) throw new Error(`Could not read previous Regent count: ${countError.message}`);
+    if ((previous ?? 0) >= 10 && records.length < Math.ceil((previous ?? 0) * 0.5)) {
+      throw new Error(`Suspicious Regent count drop from ${previous} to ${records.length}`);
+    }
+
+    const committed = await commitImport(context, records, now);
+    if (committed.errors.length) throw new Error(committed.errors.join("; "));
+    await endRun(context, started.runId, "success", found, committed.saved);
+    return jsonResponse({
+      success: true,
+      cinema: CINEMA_NAME,
+      screenings_found: found,
+      screenings_saved: committed.saved,
+      previous_active: previous ?? 0,
+      metadata_population: {
+        title_hints: records.filter((record) => record.film_title_hint).length,
+        release_years: records.filter((record) => record.source_release_year).length,
+        runtimes: records.filter((record) => record.source_runtime_minutes).length,
+        directors: records.filter((record) => record.source_directors?.length).length,
+        countries: records.filter((record) => record.source_countries?.length).length,
+        artwork: records.filter((record) => record.verified_artwork_url).length,
+        accessibility: records.filter((record) => record.accessibility_features?.length).length,
+        screening_labels: records.filter((record) => record.screening_label).length,
+        known_availability: records.filter((record) => record.availability_status !== "unknown").length,
+        sold_out: records.filter((record) => record.sold_out).length,
+      },
+      examples: records.slice(0, 5),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await endRun(context, started.runId, "failed", found, 0, message);
+    return jsonResponse({ success: false, cinema: CINEMA_NAME, error: message }, 500);
+  }
+});
