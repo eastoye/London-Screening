@@ -3,7 +3,7 @@ import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 import {
   corsHeaders,
   jsonResponse,
-  londonOffsetMinutes,
+  londonToUtc,
   startRun,
   endRun,
   commitImport,
@@ -11,25 +11,55 @@ import {
   type ImportRunContext,
 } from "../_shared/importSafety.ts";
 import {
-  parseOlympicPage,
-  fallbackSourceRef,
-  type ParsedOlympicScreening,
-} from "../_shared/olympicParser.ts";
+  compactStrings,
+  normaliseScreeningTags,
+  parseExplicitYear,
+  parseRuntimeMinutes,
+} from "../_shared/screeningMetadata.ts";
 
-const SELFRIDGES_URL = "https://www.thecinemaatselfridges.com/whats-on";
-const POWER_STATION_URL = "https://www.thecinemainthepowerstation.com/whats-on";
-const CINEMA_NAME_RUN = "Olympic Cinemas";
-const MIN_SCREENINGS = 3;
+const CINEMA_NAME = "Barbican Cinema";
+const CINEMA_URL = "https://www.barbican.org.uk/whats-on/cinema";
+const BOOKING_BASE = "https://tickets.barbican.org.uk";
+const SPEKTRIX_API_BASE =
+  "https://spektrix.barbican.org.uk/barbicancentre/api/v3";
+const SOURCE_PREFIX = "barbican";
+const LOOKAHEAD_DAYS = 30;
+const FETCH_BATCH_SIZE = 5;
+const MIN_SCREENINGS = 10;
+const RATIO_GUARD_MIN_EXISTING = 10;
+const MIN_EXPECTED_RATIO = 0.5;
 
-const SELFRIDGES_BASE = "https://www.thecinemaatselfridges.com";
-const POWER_STATION_BASE = "https://www.thecinemainthepowerstation.com";
+type AvailabilityStatus = "available" | "sold_out" | "unknown";
 
-interface VenueResult {
-  cinema_name: string;
-  prefix: string;
-  found: number;
-  saved: number;
-  skipped_past: number;
+interface ParsedScreening {
+  movie_title: string;
+  start_time_iso: string;
+  booking_url: string | null;
+  source_reference: string;
+  sold_out: boolean;
+  projection_formats: string[];
+  accessibility_features: string[];
+  programme_types: string[];
+  availability_status: AvailabilityStatus;
+  event_url: string;
+  film_title_hint: string | null;
+  source_release_year: number | null;
+  source_runtime_minutes: number | null;
+  source_directors: string[];
+  source_countries: string[];
+  screen_name: string | null;
+  screening_label: string | null;
+  screening_tags: ReturnType<typeof normaliseScreeningTags>;
+  verified_artwork_url: string | null;
+}
+
+interface SpektrixInstance {
+  id?: string;
+  startUtc?: string;
+  cancelled?: boolean;
+  attribute_AudioDescribed?: boolean;
+  attribute_Captioned?: boolean;
+  attribute_Relaxed?: boolean;
 }
 
 const fetchOpts: RequestInit = {
@@ -39,8 +69,447 @@ const fetchOpts: RequestInit = {
     Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-GB,en;q=0.9",
   },
-  redirect: "follow" as const,
+  redirect: "follow",
 };
+
+function decodeEntities(value: string): string {
+  return value
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0?39;|&apos;/gi, "'")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">");
+}
+
+function textFromHtml(value: string): string {
+  return decodeEntities(value.replace(/<[^>]+>/g, " "))
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function formatDate(date: Date): string {
+  return [
+    date.getUTCFullYear(),
+    String(date.getUTCMonth() + 1).padStart(2, "0"),
+    String(date.getUTCDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+function londonCalendarDate(date: Date): string {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/London",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const value = (type: "year" | "month" | "day") =>
+    parts.find((part) => part.type === type)?.value;
+  const year = value("year");
+  const month = value("month");
+  const day = value("day");
+  if (!year || !month || !day) throw new Error("Could not determine current London date");
+  return `${year}-${month}-${day}`;
+}
+
+function parse12h(value: string): { hour: number; minute: number } | null {
+  const match = value.trim().toLowerCase().match(/^(\d{1,2})[.:](\d{2})\s*(am|pm)$/);
+  if (!match) return null;
+  let hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (hour < 1 || hour > 12 || minute > 59) return null;
+  if (match[3] === "am" && hour === 12) hour = 0;
+  if (match[3] === "pm" && hour !== 12) hour += 12;
+  return { hour, minute };
+}
+
+function normaliseTitleAndFormat(rawTitle: string): {
+  title: string;
+  filmTitleHint: string | null;
+  projection_formats: string[];
+} {
+  const formats: string[] = [];
+  if (/\[\s*35mm\s*\]/i.test(rawTitle)) formats.push("35mm");
+  if (/\[\s*70mm\s*\]/i.test(rawTitle)) formats.push("70mm");
+  if (/\[\s*imax\s*\]/i.test(rawTitle)) formats.push("imax");
+  const filmTitleHint = rawTitle
+    .replace(/\[\s*(?:35mm|70mm|imax)\s*\]/gi, "")
+    .replace(/^parent\s*(?:&|and)\s*baby\s+screening\s*:\s*/i, "")
+    .replace(/^relaxed\s+screening\s*:\s*/i, "")
+    .replace(/^senior(?:s| community)?\s+(?:cinema|screening)\s*:\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return {
+    title: rawTitle.replace(/\s+/g, " ").trim(),
+    filmTitleHint: filmTitleHint || null,
+    projection_formats: Array.from(new Set(formats)),
+  };
+}
+
+/**
+ * Return a movie-matching hint only when the detail page names one film.
+ * Public display titles are never changed. Event additions are removed only
+ * when introduced by explicit source wording; double bills and compilations
+ * deliberately remain unknown.
+ */
+function safeFilmTitleHint(raw: string | null): string | null {
+  if (!raw) return null;
+  if (
+    /\bSeries\s+\d+\b/i.test(raw) ||
+    /\bEpisode\s+\d+\b/i.test(raw) ||
+    /\bTV\s+Preview\b/i.test(raw) ||
+    /^Season Preview:/i.test(raw)
+  ) {
+    return null;
+  }
+
+  let value = raw
+    .replace(/^Adrian Wootton Presents\.\.\.\s*/i, "")
+    .replace(/^Contemporary\s+75:\s*/i, "")
+    .replace(/^Preview:\s*/i, "")
+    .replace(/^parent\s*(?:&|and)\s*baby\s+screening\s*:\s*/i, "")
+    .replace(/^relaxed\s+screening\s*:\s*/i, "")
+    .replace(/^senior(?:s| community)?\s+(?:cinema|screening)\s*:\s*/i, "")
+    .replace(
+      /\s*(?:\+|with)\s+(?:(?:an?|the)\s+)?(?:introduction|intro|screen\s*talk|screentalk|q\s*&\s*a|discussion|conversation|pre-film\b)[\s\S]*$/i,
+      "",
+    )
+    .replace(
+      /\s*\[\s*(?:35\s*mm|70\s*mm|imax|dubbed|subtitled|captioned|cap|ad|rel|audio\s+described|relaxed)\s*\]\s*/gi,
+      " ",
+    )
+    .replace(/\s*\((?:2K|4K|8K)?\s*Restoration\)\s*$/i, "")
+    .replace(/\s*\((?:U|PG|12A?|15|18)\*?\)\s*$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!value) return null;
+  if (/\s(?:\+|&)\s/.test(value)) return null;
+  if (
+    /\b(?:short films?|short stories|shorts programme|programme of shorts|compilation|double bill|triple bill|trilogy)\b/i.test(value)
+  ) {
+    return null;
+  }
+  return value;
+}
+
+function isClearlyNonFilm(title: string): boolean {
+  if (/^panel\s*:/i.test(title) && !/\b(screening|film|cinema)\b|\+/i.test(title)) return true;
+  if (/\bnetworking\b/i.test(title)) return true;
+  if (/\bindustry session\b/i.test(title)) return true;
+  if (/\bworkshop\b/i.test(title) && !/\b(screening|film|cinema)\b|\+/i.test(title)) return true;
+  return false;
+}
+
+function normaliseMetadata(explicit: string, soldOut: boolean) {
+  const accessibility_features: string[] = [];
+  const programme_types: string[] = [];
+
+  if (
+    /\b(?:captioned|open captions?|hard of hearing|hoh)\b/i.test(explicit) ||
+    /\bCAP\b/.test(explicit)
+  ) {
+    accessibility_features.push("captioned");
+  }
+  if (
+    /\b(?:audio described|audio description)\b/i.test(explicit) ||
+    /\bAD\b/.test(explicit)
+  ) {
+    accessibility_features.push("audio_described");
+  }
+  if (/\brelaxed screening\b/i.test(explicit) || /\bREL\b/.test(explicit)) {
+    accessibility_features.push("relaxed");
+  }
+  if (/\bparent\s*(?:&|and)\s*baby\b|\bparent and baby screening\b/i.test(explicit)) {
+    programme_types.push("parent_and_baby");
+  }
+  if (/\bsenior(?:s| community)?\s+(?:cinema|screening)\b/i.test(explicit)) {
+    programme_types.push("seniors");
+  }
+  if (/\bmembers?[- ]only\b|\bmembers?'?\s+screening\b/i.test(explicit)) {
+    programme_types.push("members_only");
+  }
+
+  return {
+    accessibility_features,
+    programme_types,
+    availability_status: (soldOut ? "sold_out" : "available") as AvailabilityStatus,
+  };
+}
+
+function slugFromHref(href: string): string {
+  const path = href.split("?")[0].replace(/\/$/, "");
+  const slug = path.split("/").filter(Boolean).pop() || "event";
+  return slug.toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
+function absoluteUrl(href: string): string {
+  if (/^https?:\/\//i.test(href)) return href;
+  if (href.startsWith("/")) return `https://www.barbican.org.uk${href}`;
+  return `https://www.barbican.org.uk/${href}`;
+}
+
+function parseDayPage(html: string, isoDate: string): {
+  screenings: ParsedScreening[];
+  excluded: string[];
+  errors: string[];
+} {
+  const [year, month, day] = isoDate.split("-").map(Number);
+  const cardRegex = /<div\s+class="cinema-listing-card"[^>]*>/gi;
+  const cardStarts: number[] = [];
+  let cardMatch: RegExpExecArray | null;
+  while ((cardMatch = cardRegex.exec(html)) !== null) cardStarts.push(cardMatch.index);
+
+  const screenings: ParsedScreening[] = [];
+  const excluded: string[] = [];
+  const errors: string[] = [];
+
+  for (let ci = 0; ci < cardStarts.length; ci++) {
+    const card = html.slice(
+      cardStarts[ci],
+      ci + 1 < cardStarts.length ? cardStarts[ci + 1] : html.length,
+    );
+    const titleMatch = card.match(
+      /<h2[^>]*class="cinema-listing-card__title"[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>\s*<\/h2>/i,
+    );
+    if (!titleMatch) continue;
+    const eventHref = absoluteUrl(decodeEntities(titleMatch[1]));
+    const rawTitle = textFromHtml(titleMatch[2]);
+    const titleData = normaliseTitleAndFormat(rawTitle);
+    if (!titleData.title) continue;
+    if (isClearlyNonFilm(titleData.title)) {
+      excluded.push(titleData.title);
+      continue;
+    }
+
+    const tagsMatch = card.match(
+      /<div[^>]*class="cinema-listing-card__tags"[^>]*>([\s\S]*?)<\/div>/i,
+    );
+    const tagsText = tagsMatch ? textFromHtml(tagsMatch[1]) : "";
+    const instanceRegex = /<div\s+class="cinema-instance-list__instance"[^>]*>/gi;
+    const instanceStarts: number[] = [];
+    let instanceMatch: RegExpExecArray | null;
+    while ((instanceMatch = instanceRegex.exec(card)) !== null) {
+      instanceStarts.push(instanceMatch.index);
+    }
+
+    for (let ii = 0; ii < instanceStarts.length; ii++) {
+      const instance = card.slice(
+        instanceStarts[ii],
+        ii + 1 < instanceStarts.length ? instanceStarts[ii + 1] : card.length,
+      );
+      const timeText = textFromHtml(instance).match(/\b(\d{1,2}[.:]\d{2}\s*(?:am|pm))\b/i)?.[1];
+      if (!timeText) continue;
+      const time = parse12h(timeText);
+      if (!time) {
+        errors.push(`${titleData.title} ${isoDate}: unparseable time "${timeText}"`);
+        continue;
+      }
+
+      const bookingMatch = instance.match(
+        /href="(?:https:\/\/tickets\.barbican\.org\.uk)?\/choose-seats\/(\d+)"/i,
+      );
+      const soldOut = /\(\s*Sold\s*out\s*\)|\bSold\s*out\b/i.test(instance);
+      const instanceId = bookingMatch?.[1] || null;
+      const sourceReference = instanceId
+        ? `${SOURCE_PREFIX}:spektrix:${instanceId}`
+        : `${SOURCE_PREFIX}:soldout:${slugFromHref(eventHref)}:${isoDate}:${String(time.hour).padStart(2, "0")}${String(time.minute).padStart(2, "0")}`;
+
+      if (!instanceId && !soldOut) {
+        errors.push(`${titleData.title} ${isoDate} ${timeText}: no booking ID or sold-out marker`);
+        continue;
+      }
+
+      const instanceText = textFromHtml(instance);
+      const explicitMetadata = `${rawTitle} ${tagsText} ${instanceText}`;
+      const metadata = normaliseMetadata(explicitMetadata, soldOut);
+      const sourceLabels = compactStrings([
+        /\bCAP\b/.test(instanceText) ? "CAP" : null,
+        /\bAD\b/.test(instanceText) ? "AD" : null,
+        /\bREL\b/.test(instanceText) ? "REL" : null,
+        soldOut ? "Sold out" : null,
+      ]);
+      const start = londonToUtc(year, month, day, time.hour, time.minute);
+      screenings.push({
+        movie_title: titleData.title,
+        start_time_iso: start.toISOString(),
+        booking_url: !soldOut && instanceId ? `${BOOKING_BASE}/choose-seats/${instanceId}` : null,
+        source_reference: sourceReference,
+        sold_out: soldOut,
+        projection_formats: titleData.projection_formats,
+        accessibility_features: metadata.accessibility_features,
+        programme_types: metadata.programme_types,
+        availability_status: metadata.availability_status,
+        event_url: eventHref,
+        film_title_hint: titleData.filmTitleHint,
+        source_release_year: null,
+        source_runtime_minutes: null,
+        source_directors: [],
+        source_countries: [],
+        screen_name: null,
+        screening_label: sourceLabels.length ? sourceLabels.join(", ") : null,
+        screening_tags: normaliseScreeningTags([rawTitle, tagsText, instanceText]),
+        verified_artwork_url: null,
+      });
+    }
+  }
+
+  return { screenings, excluded, errors };
+}
+
+async function fetchHtmlWithRetry(url: string, label: string): Promise<string> {
+  let lastError = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(url, { ...fetchOpts, signal: AbortSignal.timeout(15000) });
+      if (response.ok) return await response.text();
+      lastError = `HTTP ${response.status}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+  }
+  throw new Error(`${label} failed after 3 attempts: ${lastError}`);
+}
+
+async function fetchDay(isoDate: string): Promise<string> {
+  const html = await fetchHtmlWithRetry(`${CINEMA_URL}?day=${isoDate}`, `Barbican ${isoDate}`);
+  const hasListings = html.includes("cinema-listing-card");
+  const isExplicitlyEmpty = /(?:there are\s+)?no\s+(?:cinema\s+listings|films|events|results)\b/i.test(html);
+  if (!hasListings && !isExplicitlyEmpty) {
+    throw new Error(`Barbican ${isoDate} did not contain the expected cinema listing structure`);
+  }
+  return html;
+}
+
+function detailValue(html: string, label: string): string | null {
+  const match = html.match(new RegExp(
+    `label-value-list__label[^>]*>\\s*${label}\\s*<\\/span>[\\s\\S]*?label-value-list__value[^>]*>([\\s\\S]*?)<\\/span>`,
+    "i",
+  ));
+  return match ? textFromHtml(match[1]) : null;
+}
+
+function parseEventDetail(html: string) {
+  const artwork = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i)?.[1] || null;
+  const venue = html.match(/event-byline__venue[^>]*>[\s\S]*?<a[^>]*>([\s\S]*?)<\/a>/i);
+  let dataLayer: {
+    title?: string;
+    subtitle?: string;
+    listingTitle?: string;
+    eventInfo?: Array<{ id?: string }>;
+  } | null = null;
+  const dataMatch = html.match(/var\s+dataLayer\s*=\s*(\[[\s\S]*?\]);\s*<\/script>/i);
+  if (dataMatch) {
+    try { dataLayer = JSON.parse(dataMatch[1])?.[0] || null; } catch { /* retain nulls */ }
+  }
+  return {
+    filmTitleHint: safeFilmTitleHint(dataLayer?.title?.trim() || null),
+    spektrixEventId: dataLayer?.eventInfo?.[0]?.id?.trim() || null,
+    releaseYear: parseExplicitYear(detailValue(html, "Release year")),
+    runtime: parseRuntimeMinutes(detailValue(html, "Runtime")),
+    directors: compactStrings((detailValue(html, "Director") || "").split(/\s*(?:,|;|\/|&|\band\b)\s*/i)),
+    countries: compactStrings((detailValue(html, "Country of origin") || "").split(/\s*(?:,|\/|;)\s*/)),
+    screenName: venue && /^Cinema\s+\d+$/i.test(textFromHtml(venue[1]))
+      ? textFromHtml(venue[1])
+      : null,
+    artworkUrl: artwork ? decodeEntities(artwork) : null,
+    tags: normaliseScreeningTags([dataLayer?.subtitle]),
+  };
+}
+
+async function fetchJsonWithRetry<T>(url: string, label: string): Promise<T> {
+  let lastError = "";
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const response = await fetch(url, {
+        headers: { ...fetchOpts.headers, Accept: "application/json" },
+        redirect: "follow",
+        signal: AbortSignal.timeout(15000),
+      });
+      if (response.ok) return await response.json() as T;
+      lastError = `HTTP ${response.status}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+  }
+  throw new Error(`${label} failed after 3 attempts: ${lastError}`);
+}
+
+function publicInstanceId(id: string | undefined): string | null {
+  return id?.match(/^\d+/)?.[0] || null;
+}
+
+function spektrixUtcMillis(value: string): number {
+  const explicitUtc = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(value) ? value : `${value}Z`;
+  return new Date(explicitUtc).getTime();
+}
+
+function mergeSpektrixAccessibility(
+  screening: ParsedScreening,
+  instance: SpektrixInstance,
+): void {
+  const features = new Set(screening.accessibility_features);
+  const labels = new Set(compactStrings(screening.screening_label?.split(/\s*,\s*/) || []));
+  if (instance.attribute_Captioned) {
+    features.add("captioned");
+    labels.add("CAP");
+  }
+  if (instance.attribute_AudioDescribed) {
+    features.add("audio_described");
+    labels.add("AD");
+  }
+  if (instance.attribute_Relaxed) features.add("relaxed");
+  screening.accessibility_features = Array.from(features);
+  screening.screening_label = labels.size > 0 ? Array.from(labels).join(", ") : null;
+}
+
+async function getPreviousActiveCount(
+  ctx: ImportRunContext,
+  nowUtc: Date,
+): Promise<number> {
+  const { count, error } = await ctx.supabase
+    .from("screenings")
+    .select("id", { count: "exact", head: true })
+    .eq("cinema_name", CINEMA_NAME)
+    .eq("active", true)
+    .gt("start_time", nowUtc.toISOString());
+  if (error) throw new Error(`Could not read previous screening count: ${error.message}`);
+  return count ?? 0;
+}
+
+async function preserveExistingReferences(
+  ctx: ImportRunContext,
+  screenings: ParsedScreening[],
+  nowUtc: Date,
+): Promise<number> {
+  const { data, error } = await ctx.supabase
+    .from("screenings")
+    .select("source_reference,start_time,source_event_url")
+    .eq("cinema_name", CINEMA_NAME)
+    .eq("active", true)
+    .gt("start_time", nowUtc.toISOString());
+  if (error) throw new Error(`Could not read existing screening identities: ${error.message}`);
+
+  const existingByEventAndTime = new Map<string, string>();
+  for (const row of data || []) {
+    if (!row.source_event_url || !row.source_reference || !row.start_time) continue;
+    const key = `${row.source_event_url}\u0000${new Date(row.start_time).toISOString()}`;
+    existingByEventAndTime.set(key, row.source_reference);
+  }
+
+  let preserved = 0;
+  for (const screening of screenings) {
+    const key = `${screening.event_url}\u0000${screening.start_time_iso}`;
+    const existingReference = existingByEventAndTime.get(key);
+    if (existingReference && existingReference !== screening.source_reference) {
+      screening.source_reference = existingReference;
+      preserved += 1;
+    }
+  }
+  return preserved;
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") {
@@ -48,358 +517,220 @@ Deno.serve(async (req: Request) => {
   }
 
   const startedAt = new Date();
-  const startedIso = startedAt.toISOString();
-  console.log(`[import-olympic-cinemas] starting at ${startedIso}`);
-
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!supabaseUrl || !serviceRoleKey) {
-    return jsonResponse(
-      { success: false, error: "Missing Supabase credentials." },
-      500,
-    );
+    return jsonResponse({ success: false, error: "Missing Supabase credentials." }, 500);
   }
 
   const supabase = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-
   const ctx: ImportRunContext = {
     supabase,
-    cinemaName: CINEMA_NAME_RUN,
+    cinemaName: CINEMA_NAME,
     minScreenings: MIN_SCREENINGS,
     startedAt,
   };
-
   const runStart = await startRun(ctx);
   if (runStart.blocked) {
-    return jsonResponse(
-      {
-        success: false,
-        error: "Another Olympic Cinemas import is already running.",
-        blocked: true,
-      },
-      409,
-    );
+    return jsonResponse({ success: false, blocked: true, error: "Import already running." }, 409);
   }
   if (runStart.error || !runStart.runId) {
-    return jsonResponse(
-      {
-        success: false,
-        error: runStart.error ?? "Could not start run.",
-      },
-      500,
-    );
+    return jsonResponse({ success: false, error: runStart.error ?? "Could not start run." }, 500);
   }
   const runId = runStart.runId;
 
-  const nowUtc = new Date();
-  const offsetMin = londonOffsetMinutes(nowUtc);
-  const nowLondon = new Date(nowUtc.getTime() + offsetMin * 60 * 1000);
-
-  let selfridgesHtml: string;
-  let powerStationHtml: string;
-
   try {
-    console.log("[import-olympic-cinemas] fetching Selfridges...");
-    const selfridgesResponse = await fetch(SELFRIDGES_URL, fetchOpts);
-    if (!selfridgesResponse.ok) {
-      const message =
-        `Failed to fetch Selfridges: HTTP ${selfridgesResponse.status} ${selfridgesResponse.statusText}`;
-      await endRun(ctx, runId, "failed", 0, 0, message);
-      return jsonResponse({ success: false, error: message }, 502);
+    const dates: string[] = [];
+    const [todayYear, todayMonth, todayDay] = londonCalendarDate(startedAt).split("-").map(Number);
+    const today = new Date(Date.UTC(todayYear, todayMonth - 1, todayDay));
+    for (let offset = 0; offset < LOOKAHEAD_DAYS; offset++) {
+      dates.push(formatDate(new Date(today.getTime() + offset * 86_400_000)));
     }
-    selfridgesHtml = await selfridgesResponse.text();
-    console.log(
-      `[import-olympic-cinemas] Selfridges fetched ${selfridgesHtml.length} bytes`,
-    );
 
-    console.log("[import-olympic-cinemas] fetching Power Station...");
-    const powerStationResponse = await fetch(POWER_STATION_URL, fetchOpts);
-    if (!powerStationResponse.ok) {
-      const message =
-        `Failed to fetch Power Station: HTTP ${powerStationResponse.status} ${powerStationResponse.statusText}`;
-      await endRun(ctx, runId, "failed", 0, 0, message);
-      return jsonResponse({ success: false, error: message }, 502);
-    }
-    powerStationHtml = await powerStationResponse.text();
-    console.log(
-      `[import-olympic-cinemas] Power Station fetched ${powerStationHtml.length} bytes`,
-    );
-  } catch (error) {
-    const message =
-      `Network error: ${error instanceof Error ? error.message : String(error)}`;
-    await endRun(ctx, runId, "failed", 0, 0, message);
-    return jsonResponse({ success: false, error: message }, 502);
-  }
-
-  let selfridgesParsed: ParsedOlympicScreening[] = [];
-  let powerStationParsed: ParsedOlympicScreening[] = [];
-  let powerStationDiagnostics = {
-    venueHeadingsArches: 0,
-    venueHeadingsPowerstation: 0,
-    archesBookingButtons: 0,
-    powerStationBookingButtons: 0,
-  };
-
-  try {
-    const selfridgesResult = parseOlympicPage(
-      selfridgesHtml,
-      SELFRIDGES_BASE,
-      nowLondon,
-    );
-    selfridgesParsed = selfridgesResult.screenings;
-    console.log(
-      `[import-olympic-cinemas] Selfridges parsed ${selfridgesParsed.length} screenings`,
-    );
-
-    const powerStationResult = parseOlympicPage(
-      powerStationHtml,
-      POWER_STATION_BASE,
-      nowLondon,
-    );
-    powerStationParsed = powerStationResult.screenings;
-    powerStationDiagnostics = powerStationResult.diagnostics;
-    console.log(
-      `[import-olympic-cinemas] Power Station parsed ${powerStationParsed.length} screenings`,
-    );
-    console.log(
-      `[import-olympic-cinemas] diagnostics: ${JSON.stringify(powerStationDiagnostics)}`,
-    );
-  } catch (error) {
-    const message =
-      `Parse error: ${error instanceof Error ? error.message : String(error)}`;
-    await endRun(ctx, runId, "failed", 0, 0, message);
-    return jsonResponse({ success: false, error: message }, 500);
-  }
-
-  if (selfridgesParsed.length < MIN_SCREENINGS) {
-    const message =
-      `Selfridges screening count too low (${selfridgesParsed.length}). Database left untouched.`;
-    await endRun(ctx, runId, "failed", selfridgesParsed.length, 0, message);
-    return jsonResponse(
-      {
-        success: false,
-        error: message,
-        selfridges_found: selfridgesParsed.length,
-      },
-      500,
-    );
-  }
-
-  if (powerStationParsed.length < MIN_SCREENINGS) {
-    const message =
-      `Power Station screening count too low (${powerStationParsed.length}). Database left untouched.`;
-    await endRun(ctx, runId, "failed", powerStationParsed.length, 0, message);
-    return jsonResponse(
-      {
-        success: false,
-        error: message,
-        power_station_found: powerStationParsed.length,
-      },
-      500,
-    );
-  }
-
-  const venueResults: VenueResult[] = [];
-  let totalSaved = 0;
-  const allErrors: string[] = [];
-
-  const buildRecords = (
-    parsed: ParsedOlympicScreening[],
-    cinemaName: string,
-    prefix: string,
-  ): ScreeningRecord[] =>
-    parsed
-      .filter(
-        (screening) =>
-          screening.start_time_iso !== null &&
-          new Date(screening.start_time_iso).getTime() > nowUtc.getTime(),
-      )
-      .map((screening) => {
-        const sourceReference = screening.booking_id
-          ? `olympic:${prefix}:${screening.booking_id}`
-          : fallbackSourceRef(
-              prefix,
-              screening.movie_title,
-              screening.start_time_iso!,
-            );
-
-        return {
-          cinema_name: cinemaName,
-          movie_title: screening.movie_title,
-          start_time: screening.start_time_iso!,
-          booking_url: screening.booking_url,
-          format: screening.format,
-          sold_out: screening.sold_out,
-          projection_formats: screening.projection_formats,
-          accessibility_features: screening.accessibility_features,
-          programme_types: screening.programme_types,
-          availability_status: screening.availability_status,
-          source_event_url: screening.film_url,
-          screening_label: screening.screening_label,
-          screening_tags: screening.screening_tags,
-          source_reference: sourceReference,
-          last_seen_at: startedAt.toISOString(),
-        };
-      });
-
-  {
-    const cinemaName = "The Cinema at Selfridges";
-    const prefix = "selfridges";
-    const records = buildRecords(selfridgesParsed, cinemaName, prefix);
-    const skippedPast = selfridgesParsed.length - records.length;
-    const venueCtx: ImportRunContext = { ...ctx, cinemaName };
-    const { saved, errors } = await commitImport(venueCtx, records, nowUtc);
-    totalSaved += saved;
-    allErrors.push(...errors);
-    venueResults.push({
-      cinema_name: cinemaName,
-      prefix,
-      found: selfridgesParsed.length,
-      saved,
-      skipped_past: skippedPast,
-    });
-  }
-
-  {
-    const powerStationPrefix = "power-station";
-    const archesPrefix = "arches";
-    const powerStationCinemaName = "The Cinema in the Power Station";
-    const archesCinemaName = "The Cinema in the Arches";
-
-    const powerStationOnly: ParsedOlympicScreening[] = [];
-    const archesOnly: ParsedOlympicScreening[] = [];
-
-    for (const screening of powerStationParsed) {
-      if (/arches/i.test(screening.venue_label)) {
-        archesOnly.push(screening);
-      } else {
-        powerStationOnly.push(screening);
+    const byReference = new Map<string, ParsedScreening>();
+    const excluded = new Set<string>();
+    const parseErrors: string[] = [];
+    for (let i = 0; i < dates.length; i += FETCH_BATCH_SIZE) {
+      const batchDates = dates.slice(i, i + FETCH_BATCH_SIZE);
+      const pages = await Promise.all(batchDates.map(async (date) => ({ date, html: await fetchDay(date) })));
+      for (const page of pages) {
+        const parsed = parseDayPage(page.html, page.date);
+        for (const title of parsed.excluded) excluded.add(title);
+        parseErrors.push(...parsed.errors);
+        for (const screening of parsed.screenings) {
+          const existing = byReference.get(screening.source_reference);
+          if (!existing) {
+            byReference.set(screening.source_reference, screening);
+          } else if (
+            existing.movie_title !== screening.movie_title ||
+            existing.start_time_iso !== screening.start_time_iso
+          ) {
+            parseErrors.push(`${screening.source_reference}: conflicting duplicate performance`);
+          }
+        }
       }
     }
 
-    {
-      const records = buildRecords(
-        powerStationOnly,
-        powerStationCinemaName,
-        powerStationPrefix,
-      );
-      const skippedPast = powerStationOnly.length - records.length;
-      const venueCtx: ImportRunContext = {
-        ...ctx,
-        cinemaName: powerStationCinemaName,
-      };
-      const { saved, errors } = await commitImport(
-        venueCtx,
-        records,
-        nowUtc,
-      );
-      totalSaved += saved;
-      allErrors.push(...errors);
-      venueResults.push({
-        cinema_name: powerStationCinemaName,
-        prefix: powerStationPrefix,
-        found: powerStationOnly.length,
-        saved,
-        skipped_past: skippedPast,
-      });
+    if (parseErrors.length > 0) {
+      throw new Error(`Programme contained ${parseErrors.length} parse conflicts; database left untouched.`);
     }
 
-    const archesPresentOnPage =
-      archesOnly.length > 0 ||
-      powerStationDiagnostics.archesBookingButtons > 0 ||
-      powerStationDiagnostics.venueHeadingsArches > 0;
-
-    if (archesPresentOnPage) {
-      const records = buildRecords(
-        archesOnly,
-        archesCinemaName,
-        archesPrefix,
-      );
-      const skippedPast = archesOnly.length - records.length;
-      const venueCtx: ImportRunContext = {
-        ...ctx,
-        cinemaName: archesCinemaName,
-      };
-      const { saved, errors } = await commitImport(
-        venueCtx,
-        records,
-        nowUtc,
-      );
-      totalSaved += saved;
-      allErrors.push(...errors);
-      venueResults.push({
-        cinema_name: archesCinemaName,
-        prefix: archesPrefix,
-        found: archesOnly.length,
-        saved,
-        skipped_past: skippedPast,
-      });
-    } else {
-      console.log(
-        "[import-olympic-cinemas] Arches not present on page; skipping commit to preserve existing rows.",
-      );
-      venueResults.push({
-        cinema_name: archesCinemaName,
-        prefix: archesPrefix,
-        found: 0,
-        saved: 0,
-        skipped_past: 0,
-      });
+    const detailUrls = Array.from(new Set(
+      Array.from(byReference.values()).map((screening) => screening.event_url),
+    ));
+    const details = new Map<string, ReturnType<typeof parseEventDetail>>();
+    for (let i = 0; i < detailUrls.length; i += FETCH_BATCH_SIZE) {
+      const batch = detailUrls.slice(i, i + FETCH_BATCH_SIZE);
+      const pages = await Promise.all(batch.map(async (url) => ({
+        url,
+        html: await fetchHtmlWithRetry(url, `Barbican detail ${url}`),
+      })));
+      for (const page of pages) details.set(page.url, parseEventDetail(page.html));
     }
-  }
 
-  if (allErrors.length > 0) {
-    const message = `Import errors: ${allErrors.join("; ")}`;
-    await endRun(ctx, runId, "failed", totalSaved, totalSaved, message);
-    return jsonResponse(
-      {
-        success: false,
-        error: message,
-        screenings_saved: totalSaved,
-      },
-      500,
-    );
-  }
-
-  await endRun(ctx, runId, "success", totalSaved, totalSaved);
-  console.log(`[import-olympic-cinemas] done: total saved=${totalSaved}`);
-
-  const allRecords: ScreeningRecord[] = [];
-  for (const venueResult of venueResults) {
-    const { data } = await supabase
-      .from("screenings")
-      .select(
-        "cinema_name,movie_title,start_time,booking_url,format,sold_out,availability_status,projection_formats,accessibility_features,programme_types,screening_label,screening_tags,source_reference",
+    const soldOutEventUrls = detailUrls.filter((url) =>
+      Array.from(byReference.values()).some((screening) =>
+        screening.event_url === url && screening.source_reference.startsWith(`${SOURCE_PREFIX}:soldout:`)
       )
-      .eq("cinema_name", venueResult.cinema_name)
-      .eq("active", true)
-      .order("start_time", { ascending: true })
-      .limit(5);
+    );
+    const instancesByEventUrl = new Map<string, SpektrixInstance[]>();
+    for (let i = 0; i < soldOutEventUrls.length; i += FETCH_BATCH_SIZE) {
+      const batch = soldOutEventUrls.slice(i, i + FETCH_BATCH_SIZE);
+      const responses = await Promise.all(batch.map(async (url) => {
+        const eventId = details.get(url)?.spektrixEventId;
+        if (!eventId) throw new Error(`Sold-out Barbican event has no Spektrix event ID: ${url}`);
+        const instances = await fetchJsonWithRetry<SpektrixInstance[]>(
+          `${SPEKTRIX_API_BASE}/events/${encodeURIComponent(eventId)}/instances`,
+          `Barbican Spektrix instances ${eventId}`,
+        );
+        return { url, instances };
+      }));
+      for (const response of responses) instancesByEventUrl.set(response.url, response.instances);
+    }
 
-    if (data) allRecords.push(...(data as ScreeningRecord[]));
+    for (const screening of byReference.values()) {
+      const detail = details.get(screening.event_url);
+      if (!detail) continue;
+      screening.film_title_hint = detail.filmTitleHint;
+      screening.source_release_year = detail.releaseYear;
+      screening.source_runtime_minutes = detail.runtime;
+      screening.source_directors = detail.directors;
+      screening.source_countries = detail.countries;
+      screening.screen_name = detail.screenName;
+      screening.verified_artwork_url = detail.artworkUrl;
+      screening.screening_tags = Array.from(new Set([...screening.screening_tags, ...detail.tags]));
+
+      if (screening.source_reference.startsWith(`${SOURCE_PREFIX}:soldout:`)) {
+        const matches = (instancesByEventUrl.get(screening.event_url) || []).filter((instance) =>
+          !instance.cancelled && instance.startUtc &&
+          spektrixUtcMillis(instance.startUtc) === new Date(screening.start_time_iso).getTime()
+        );
+        if (matches.length !== 1) {
+          throw new Error(
+            `Could not uniquely match sold-out performance ${screening.movie_title} at ${screening.start_time_iso}`,
+          );
+        }
+        const instanceId = publicInstanceId(matches[0].id);
+        if (!instanceId) {
+          throw new Error(`Sold-out Barbican performance has no public instance ID: ${screening.event_url}`);
+        }
+        screening.source_reference = `${SOURCE_PREFIX}:spektrix:${instanceId}`;
+        mergeSpektrixAccessibility(screening, matches[0]);
+      }
+    }
+
+    const nowUtc = new Date();
+    const upcoming = Array.from(byReference.values()).filter(
+      (screening) => new Date(screening.start_time_iso).getTime() > nowUtc.getTime(),
+    );
+    const existingReferencesPreserved = await preserveExistingReferences(ctx, upcoming, nowUtc);
+
+    const finalReferences = new Set<string>();
+    const finalTitleTimes = new Set<string>();
+    for (const screening of upcoming) {
+      if (finalReferences.has(screening.source_reference)) {
+        throw new Error(`Duplicate final source reference: ${screening.source_reference}`);
+      }
+      finalReferences.add(screening.source_reference);
+      const titleTimeKey = `${screening.movie_title.toLocaleLowerCase("en-GB")}\u0000${screening.start_time_iso}`;
+      if (finalTitleTimes.has(titleTimeKey)) {
+        throw new Error(
+          `Duplicate final title/time: ${screening.movie_title} at ${screening.start_time_iso}`,
+        );
+      }
+      finalTitleTimes.add(titleTimeKey);
+    }
+    if (upcoming.length < MIN_SCREENINGS) {
+      throw new Error(`Unusually low screening count (${upcoming.length}); database left untouched.`);
+    }
+
+    const previousActive = await getPreviousActiveCount(ctx, nowUtc);
+    const ratioFloor = Math.ceil(previousActive * MIN_EXPECTED_RATIO);
+    if (
+      previousActive >= RATIO_GUARD_MIN_EXISTING &&
+      upcoming.length < ratioFloor
+    ) {
+      throw new Error(
+        `Suspicious count drop from ${previousActive} to ${upcoming.length}; database left untouched.`,
+      );
+    }
+
+    const records = upcoming.map((screening) => ({
+      cinema_name: CINEMA_NAME,
+      movie_title: screening.movie_title,
+      start_time: screening.start_time_iso,
+      booking_url: screening.booking_url,
+      format: screening.projection_formats.length > 0
+        ? screening.projection_formats.map((value) => value === "imax" ? "IMAX" : value).join(", ")
+        : null,
+      sold_out: screening.sold_out,
+      projection_formats: screening.projection_formats,
+      accessibility_features: screening.accessibility_features,
+      programme_types: screening.programme_types,
+      availability_status: screening.availability_status,
+      film_title_hint: screening.film_title_hint,
+      source_release_year: screening.source_release_year,
+      source_runtime_minutes: screening.source_runtime_minutes,
+      source_directors: screening.source_directors,
+      source_countries: screening.source_countries,
+      source_event_url: screening.event_url,
+      screen_name: screening.screen_name,
+      screening_label: screening.screening_label,
+      screening_tags: screening.screening_tags,
+      verified_artwork_url: screening.verified_artwork_url,
+      source_reference: screening.source_reference,
+      last_seen_at: new Date().toISOString(),
+    })) as Array<ScreeningRecord & {
+      projection_formats: string[];
+      accessibility_features: string[];
+      programme_types: string[];
+      availability_status: AvailabilityStatus;
+    }>;
+
+    const { saved, errors } = await commitImport(ctx, records, nowUtc);
+    if (errors.length > 0) throw new Error(`Import errors: ${errors.join("; ")}`);
+
+    await endRun(ctx, runId, "success", upcoming.length, saved);
+    return jsonResponse({
+      success: true,
+      cinema: CINEMA_NAME,
+      lookahead_days: LOOKAHEAD_DAYS,
+      screenings_found: upcoming.length,
+      screenings_saved: saved,
+      previous_active: previousActive,
+      event_pages_fetched: detailUrls.length,
+      spektrix_instance_lookups: soldOutEventUrls.length,
+      existing_references_preserved: existingReferencesPreserved,
+      excluded_non_film: Array.from(excluded).sort(),
+      examples: upcoming.slice(0, 5),
+      import_started_at: startedAt.toISOString(),
+      import_completed_at: new Date().toISOString(),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await endRun(ctx, runId, "failed", 0, 0, message);
+    return jsonResponse({ success: false, error: message }, 500);
   }
-
-  const examples: Record<string, ScreeningRecord[]> = {};
-  for (const venueResult of venueResults) {
-    examples[venueResult.cinema_name] = allRecords
-      .filter((record) => record.cinema_name === venueResult.cinema_name)
-      .slice(0, 5);
-  }
-
-  return jsonResponse({
-    success: true,
-    venues: venueResults.map((venueResult) => ({
-      cinema_name: venueResult.cinema_name,
-      screenings_found: venueResult.found,
-      screenings_saved: venueResult.saved,
-      skipped_past: venueResult.skipped_past,
-    })),
-    diagnostics: powerStationDiagnostics,
-    total_screenings_saved: totalSaved,
-    import_started_at: startedIso,
-    import_completed_at: new Date().toISOString(),
-    examples,
-  });
 });
