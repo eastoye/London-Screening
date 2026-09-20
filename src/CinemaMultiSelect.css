@@ -291,3 +291,16 @@
     max-width: none;
   }
 }
+
+@media (max-width: 900px) {
+  .cinema-multiselect-panel {
+    position: fixed;
+    top: 50%;
+    right: auto;
+    left: 50%;
+    width: min(330px, calc(100vw - 24px));
+    max-width: none;
+    max-height: min(450px, calc(100dvh - 24px));
+    transform: translate(-50%, -50%);
+  }
+}

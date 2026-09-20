@@ -265,3 +265,17 @@
     max-width: none;
   }
 }
+
+@media (max-width: 900px) {
+  .date-time-filter-panel {
+    position: fixed;
+    top: 50%;
+    right: auto;
+    left: 50%;
+    width: min(310px, calc(100vw - 24px));
+    max-width: none;
+    max-height: calc(100dvh - 24px);
+    overflow-y: auto;
+    transform: translate(-50%, -50%);
+  }
+}

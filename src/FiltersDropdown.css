@@ -380,3 +380,24 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+@media (max-width: 900px) {
+  .filters-dropdown-panel {
+    position: fixed;
+    top: 50%;
+    right: auto;
+    left: 50%;
+    display: flex;
+    width: min(460px, calc(100vw - 24px));
+    max-width: none;
+    max-height: calc(100dvh - 24px);
+    flex-direction: column;
+    transform: translate(-50%, -50%);
+  }
+
+  .filters-dropdown-scroll {
+    min-height: 0;
+    max-height: none;
+    flex: 1 1 auto;
+  }
+}

@@ -174,3 +174,19 @@
   .distance-filter-panel { position: fixed; top: 50%; right: auto; left: 50%; width: min(370px, calc(100vw - 24px)); max-width: none; transform: translate(-50%, -50%); }
   .distance-filter-body { max-height: 60vh; }
 }
+
+@media (max-width: 900px) {
+  .distance-filter-panel {
+    position: fixed;
+    top: 50%;
+    right: auto;
+    left: 50%;
+    width: min(370px, calc(100vw - 24px));
+    max-width: none;
+    transform: translate(-50%, -50%);
+  }
+
+  .distance-filter-body {
+    max-height: 60dvh;
+  }
+}
