@@ -46,3 +46,20 @@ test("unsafe or malformed artwork URLs are ignored", () => {
   assert.deepEqual(posterCandidates(null, "javascript:alert(1)"), []);
   assert.deepEqual(posterCandidates(null, "not a url"), []);
 });
+
+test("peer artwork is used after this screening's own verified artwork", () => {
+  assert.deepEqual(
+    posterCandidates(
+      null,
+      "https://cinema.example/own.jpg",
+      [
+        "https://cinema.example/peer.jpg",
+        "https://cinema.example/own.jpg",
+      ]
+    ),
+    [
+      "https://cinema.example/own.jpg",
+      "https://cinema.example/peer.jpg",
+    ]
+  );
+});

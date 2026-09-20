@@ -34,6 +34,7 @@ export default function ScreeningRow({ screening, userRating }) {
       <ScreeningPoster
         movie={movie}
         verifiedArtworkUrl={screening.verified_artwork_url}
+        peerVerifiedArtworkUrls={screening.peer_verified_artwork_urls}
       />
       <span className="s-time">{londonTime(screening.start_time)}</span>
 

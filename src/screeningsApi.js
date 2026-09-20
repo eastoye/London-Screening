@@ -1,4 +1,5 @@
 import { supabase, SUPABASE_CONFIGURED } from "./supabaseClient.js";
+import { addSharedMovieArtwork } from "./movieArtwork.js";
 
 const PAGE_SIZE = 500;
 
@@ -40,7 +41,7 @@ export async function fetchAllUpcomingScreenings() {
     from += PAGE_SIZE;
   }
 
-  return all;
+  return addSharedMovieArtwork(all);
 }
 
 // Cinema coordinates are stored once and fetched with the screening data.

@@ -28,9 +28,14 @@ function externalArtworkUrl(value) {
 
 // Poster priority is deliberately conservative:
 // 1. a safely matched TMDB poster
-// 2. verified artwork supplied by the cinema importer for this screening
-// 3. no URL, allowing the UI to render its placeholder
-export function posterCandidates(movie, verifiedArtworkUrl) {
+// 2. verified artwork supplied by this screening's cinema importer
+// 3. verified artwork from another screening linked to the same movie
+// 4. no URL, allowing the UI to render its placeholder
+export function posterCandidates(
+  movie,
+  verifiedArtworkUrl,
+  peerVerifiedArtworkUrls = []
+) {
   const candidates = [];
 
   if (movie?.match_status === "matched") {
@@ -38,9 +43,16 @@ export function posterCandidates(movie, verifiedArtworkUrl) {
     if (tmdbUrl) candidates.push(tmdbUrl);
   }
 
-  const sourceUrl = externalArtworkUrl(verifiedArtworkUrl);
-  if (sourceUrl && !candidates.includes(sourceUrl)) {
-    candidates.push(sourceUrl);
+  for (const value of [
+    verifiedArtworkUrl,
+    ...(Array.isArray(peerVerifiedArtworkUrls)
+      ? peerVerifiedArtworkUrls
+      : []),
+  ]) {
+    const sourceUrl = externalArtworkUrl(value);
+    if (sourceUrl && !candidates.includes(sourceUrl)) {
+      candidates.push(sourceUrl);
+    }
   }
 
   return candidates;

@@ -113,9 +113,17 @@ function MovieGroup({ group, ratingsByTmdbId }) {
       ? ratingsByTmdbId?.get(tmdbId)
       : undefined;
   const screeningCount = group.screenings.length;
-  const verifiedArtworkUrl =
-    group.screenings.find((screening) => screening.verified_artwork_url)
-      ?.verified_artwork_url ?? null;
+  const artworkScreening = group.screenings.find(
+    (screening) => screening.verified_artwork_url
+  );
+  const verifiedArtworkUrl = artworkScreening?.verified_artwork_url ?? null;
+  const peerVerifiedArtworkUrls = [
+    ...new Set(
+      group.screenings.flatMap(
+        (screening) => screening.peer_verified_artwork_urls ?? []
+      )
+    ),
+  ];
 
   return (
     <div className="movie-group">
@@ -129,6 +137,7 @@ function MovieGroup({ group, ratingsByTmdbId }) {
         <ScreeningPoster
           movie={group.movie}
           verifiedArtworkUrl={verifiedArtworkUrl}
+          peerVerifiedArtworkUrls={peerVerifiedArtworkUrls}
           className="movie-summary-poster"
         />
 

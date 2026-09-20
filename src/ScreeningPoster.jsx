@@ -28,10 +28,15 @@ function PosterPlaceholder({ className = "" }) {
 export default function ScreeningPoster({
   movie,
   verifiedArtworkUrl,
+  peerVerifiedArtworkUrls = [],
   className = "",
 }) {
   const [failedUrls, setFailedUrls] = useState(() => new Set());
-  const candidates = posterCandidates(movie, verifiedArtworkUrl);
+  const candidates = posterCandidates(
+    movie,
+    verifiedArtworkUrl,
+    peerVerifiedArtworkUrls
+  );
   const url = candidates.find((candidate) => !failedUrls.has(candidate));
 
   if (!url) {
