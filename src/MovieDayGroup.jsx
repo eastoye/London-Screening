@@ -4,6 +4,7 @@ import ScreeningPoster from "./ScreeningPoster.jsx";
 import { groupScreeningsByMovie } from "./movieGrouping.js";
 import { getScreeningDisplayChips } from "./screeningPresentation.js";
 import { formatRuntime, resolveMovieDetails } from "./movieDetails.js";
+import { getMovieTrailerUrl } from "./movieTrailer.js";
 
 function ExpandIcon({ expanded }) {
   return (
@@ -105,7 +106,7 @@ function ExpandedScreening({ screening }) {
   );
 }
 
-function MovieDetailSummary({ details }) {
+function MovieDetailSummary({ details, trailerUrl }) {
   const primary = [];
   const runtime = formatRuntime(details.runtimeMinutes);
 
@@ -117,7 +118,7 @@ function MovieDetailSummary({ details }) {
   const hasDirectors = details.directors.length > 0;
   const hasCertification = Boolean(details.ukCertification);
 
-  if (!hasPrimary && !hasDirectors && !hasCertification) return null;
+  if (!hasPrimary && !hasDirectors && !hasCertification && !trailerUrl) return null;
 
   return (
     <div className="movie-detail-summary">
@@ -140,6 +141,17 @@ function MovieDetailSummary({ details }) {
           {details.directors.length === 1 ? "Director" : "Directors"}:{" "}
           {details.directors.join(", ")}
         </div>
+      )}
+      {trailerUrl && (
+        <a
+          className="movie-trailer-link"
+          href={trailerUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label="Watch trailer on YouTube (opens in a new tab)"
+        >
+          Trailer <span aria-hidden="true">↗</span>
+        </a>
       )}
     </div>
   );
@@ -212,7 +224,10 @@ function MovieGroup({ group, ratingsByTmdbId }) {
 
       {expanded && (
         <div className="movie-expanded" id={regionId}>
-          <MovieDetailSummary details={details} />
+          <MovieDetailSummary
+            details={details}
+            trailerUrl={getMovieTrailerUrl(group.movie)}
+          />
 
           <div className="movie-screenings">
             {group.screenings.map((screening) => (

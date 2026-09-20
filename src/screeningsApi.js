@@ -21,7 +21,7 @@ export async function fetchAllUpcomingScreenings() {
     const { data, error } = await supabase
       .from("screenings")
       .select(
-        "id, cinema_name, movie_title, start_time, booking_url, format, sold_out, movie_id, projection_formats, accessibility_features, programme_types, availability_status, screening_tags, verified_artwork_url, source_release_year, source_runtime_minutes, source_directors, movies!movie_id(normalised_title, display_title, release_year, poster_path, match_status, tmdb_id, genres, uk_certification, uk_certification_status)"
+        "id, cinema_name, movie_title, start_time, booking_url, format, sold_out, movie_id, projection_formats, accessibility_features, programme_types, availability_status, screening_tags, verified_artwork_url, source_release_year, source_runtime_minutes, source_directors, movies!movie_id(normalised_title, display_title, release_year, poster_path, match_status, tmdb_id, genres, uk_certification, uk_certification_status, trailer_youtube_key, trailer_tmdb_id, trailer_checked_at)"
       )
       .eq("active", true)
       .gt("start_time", nowIso)

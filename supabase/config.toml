@@ -3,3 +3,6 @@ verify_jwt = false
 
 [functions.match-movie-posters]
 verify_jwt = false
+
+[functions.enrich-movie-metadata]
+verify_jwt = true

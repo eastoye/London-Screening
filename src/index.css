@@ -564,6 +564,31 @@ body {
   color: var(--ink-soft);
 }
 
+.movie-trailer-link {
+  display: inline-flex;
+  align-self: flex-start;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--accent);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.movie-trailer-link:hover {
+  border-color: var(--accent);
+  text-decoration: underline;
+}
+
+.movie-trailer-link:focus-visible {
+  outline: 3px solid rgba(184, 52, 26, 0.18);
+  outline-offset: 2px;
+}
+
 .movie-certification-badge {
   display: inline-flex;
   min-width: 24px;
