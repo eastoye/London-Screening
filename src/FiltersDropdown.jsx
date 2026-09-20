@@ -108,14 +108,18 @@ export default function FiltersDropdown({
   const handleContainerKeyDown = (event) => {
     if (event.key !== "Escape" || !isOpen) return;
     event.preventDefault();
-    setIsOpen(false);
-    triggerRef.current?.focus();
+    handleClose();
   };
   const handleWatchlistChange = (event) => {
     if (event.target.checked && !watchlistAvailable) return;
     updateDraft({ watchlistOnly: event.target.checked });
   };
   const handleReset = () => setDraftFilters(normaliseScreeningFilters());
+  const handleClose = () => {
+    setDraftFilters(appliedFilters);
+    setIsOpen(false);
+    triggerRef.current?.focus();
+  };
   const handleApply = () => {
     if (!canApply) return;
     onApply(normaliseScreeningFilters(draftFilters));
@@ -147,7 +151,12 @@ export default function FiltersDropdown({
         <div id={panelId} className="filters-dropdown-panel" role="dialog" aria-labelledby={headingId}>
           <div className="filters-dropdown-header">
             <h2 id={headingId} className="filters-dropdown-heading">Filters</h2>
-            <button className="filters-dropdown-reset" type="button" disabled={draftFilterCount === 0} onClick={handleReset}>Reset</button>
+
+            <div className="filters-dropdown-header-actions">
+              <button className="filters-dropdown-reset" type="button" disabled={draftFilterCount === 0} onClick={handleReset}>Reset</button>
+
+              <button className="filters-dropdown-close" type="button" aria-label="Close filters" onClick={handleClose}>×</button>
+            </div>
           </div>
 
           <div className="filters-dropdown-scroll">
