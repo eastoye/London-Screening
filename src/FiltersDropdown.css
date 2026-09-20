@@ -89,7 +89,8 @@
 .filters-dropdown-panel {
   position: absolute;
   top: calc(100% + 7px);
-  right: 0;
+  right: auto;
+  left: 0;
   z-index: 20;
   width: 460px;
   max-width: calc(100vw - 36px);
