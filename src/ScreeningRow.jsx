@@ -1,5 +1,6 @@
 import { londonTime, londonDateHeading, isToday } from "./time.js";
 import { posterUrl } from "./posterUrl.js";
+import { getScreeningDisplayChips } from "./screeningPresentation.js";
 
 function ChevronIcon() {
   return (
@@ -58,16 +59,12 @@ function Poster({ movie }) {
 }
 
 export default function ScreeningRow({ screening, userRating }) {
-  const soldOut = screening.sold_out === true;
+  const soldOut =
+    screening.sold_out === true || screening.availability_status === "sold_out";
   const bookable = Boolean(screening.booking_url) && !soldOut;
   const movie = screening.movies;
-
-  const formats = screening.format
-    ? screening.format
-        .split(",")
-        .map((format) => format.trim())
-        .filter(Boolean)
-    : [];
+  const chips = getScreeningDisplayChips(screening);
+  const hasMeta = Number.isInteger(userRating) || chips.length > 0 || soldOut;
 
   const content = (
     <>
@@ -78,21 +75,23 @@ export default function ScreeningRow({ screening, userRating }) {
         <span className="s-title">{screening.movie_title}</span>
         <span className="s-cinema">{screening.cinema_name}</span>
 
-        <span className="s-meta">
-          {Number.isInteger(userRating) && (
-            <span className="rating-badge" title="Your Trakt rating">
-              ★ {userRating}/10
-            </span>
-          )}
+        {hasMeta && (
+          <span className="s-meta">
+            {Number.isInteger(userRating) && (
+              <span className="rating-badge" title="Your Trakt rating">
+                ★ {userRating}/10
+              </span>
+            )}
 
-          {formats.map((format) => (
-            <span key={format} className="chip">
-              {format}
-            </span>
-          ))}
+            {chips.map((chip) => (
+              <span key={chip.key} className="chip">
+                {chip.label}
+              </span>
+            ))}
 
-          {soldOut && <span className="sold-badge">Sold out</span>}
-        </span>
+            {soldOut && <span className="sold-badge">Sold out</span>}
+          </span>
+        )}
       </span>
 
       <span className="s-cta">
@@ -103,9 +102,7 @@ export default function ScreeningRow({ screening, userRating }) {
           </>
         ) : soldOut ? (
           <span className="s-cta-text">—</span>
-        ) : (
-          ""
-        )}
+        ) : null}
       </span>
     </>
   );
@@ -124,7 +121,10 @@ export default function ScreeningRow({ screening, userRating }) {
   }
 
   return (
-    <div className="screening sold-out" aria-disabled="true">
+    <div
+      className={`screening${soldOut ? " sold-out" : " unavailable"}`}
+      aria-disabled="true"
+    >
       {content}
     </div>
   );

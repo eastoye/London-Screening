@@ -2,6 +2,7 @@ import { useId, useMemo, useState } from "react";
 import { londonDateHeading, londonTime, isToday } from "./time.js";
 import { posterUrl } from "./posterUrl.js";
 import { groupScreeningsByMovie } from "./movieGrouping.js";
+import { getScreeningDisplayChips } from "./screeningPresentation.js";
 
 function Poster({ movie }) {
   const posterPath =
@@ -80,30 +81,12 @@ function BookIcon() {
   );
 }
 
-function formatLabels(screening) {
-  const labels = screening.format
-    ? screening.format
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean)
-    : [];
-
-  for (const value of screening.projection_formats ?? []) {
-    const label = value === "imax" ? "IMAX" : value;
-    if (!labels.some((existing) => existing.toLowerCase() === label.toLowerCase())) {
-      labels.push(label);
-    }
-  }
-
-  return labels;
-}
-
 function ExpandedScreening({ screening }) {
   const soldOut =
     screening.sold_out === true ||
     screening.availability_status === "sold_out";
   const bookable = Boolean(screening.booking_url) && !soldOut;
-  const formats = formatLabels(screening);
+  const chips = getScreeningDisplayChips(screening);
 
   const content = (
     <>
@@ -114,11 +97,11 @@ function ExpandedScreening({ screening }) {
       <span className="movie-screening-body">
         <span className="movie-screening-cinema">{screening.cinema_name}</span>
 
-        {(formats.length > 0 || soldOut) && (
+        {(chips.length > 0 || soldOut) && (
           <span className="s-meta">
-            {formats.map((format) => (
-              <span key={format} className="chip">
-                {format}
+            {chips.map((chip) => (
+              <span key={chip.key} className="chip">
+                {chip.label}
               </span>
             ))}
             {soldOut && <span className="sold-badge">Sold out</span>}
@@ -153,7 +136,9 @@ function ExpandedScreening({ screening }) {
   }
 
   return (
-    <div className={`movie-screening${soldOut ? " sold-out" : ""}`}>
+    <div
+      className={`movie-screening${soldOut ? " sold-out" : " unavailable"}`}
+    >
       {content}
     </div>
   );

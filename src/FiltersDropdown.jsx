@@ -1,7 +1,9 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import {
+  ACCESSIBILITY_OPTIONS,
   FORMAT_OPTIONS,
   GENRE_OPTIONS,
+  PROGRAMME_OPTIONS,
   UK_CERTIFICATION_OPTIONS,
   countScreeningFilters,
   normaliseScreeningFilters,
@@ -187,6 +189,18 @@ export default function FiltersDropdown({
               options={FORMAT_OPTIONS}
               selected={draftFilters.formats}
               onToggle={(format) => updateDraft({ formats: toggleSelection(draftFilters.formats, format) })}
+            />
+            <MultiSelectGroup
+              legend="Accessibility"
+              options={ACCESSIBILITY_OPTIONS}
+              selected={draftFilters.accessibility}
+              onToggle={(feature) => updateDraft({ accessibility: toggleSelection(draftFilters.accessibility, feature) })}
+            />
+            <MultiSelectGroup
+              legend="Screening type"
+              options={PROGRAMME_OPTIONS}
+              selected={draftFilters.programmeTypes}
+              onToggle={(programmeType) => updateDraft({ programmeTypes: toggleSelection(draftFilters.programmeTypes, programmeType) })}
             />
 
             <div className="filters-dropdown-options filters-dropdown-options-last">

@@ -1,3 +1,12 @@
+import {
+  ACCESSIBILITY_OPTIONS,
+  FORMAT_OPTIONS,
+  PROGRAMME_OPTIONS,
+  getScreeningFormatValues,
+} from "./screeningPresentation.js";
+
+export { ACCESSIBILITY_OPTIONS, FORMAT_OPTIONS, PROGRAMME_OPTIONS };
+
 export const GENRE_OPTIONS = [
   "Action",
   "Adventure",
@@ -21,17 +30,13 @@ export const GENRE_OPTIONS = [
 
 export const UK_CERTIFICATION_OPTIONS = ["U", "PG", "12", "12A", "15", "18", "R18"];
 
-export const FORMAT_OPTIONS = [
-  { value: "35mm", label: "35mm" },
-  { value: "70mm", label: "70mm" },
-  { value: "imax", label: "IMAX" },
-];
-
 export const DEFAULT_SCREENING_FILTERS = Object.freeze({
   watchlistOnly: false,
   genres: Object.freeze([]),
   certifications: Object.freeze([]),
   formats: Object.freeze([]),
+  accessibility: Object.freeze([]),
+  programmeTypes: Object.freeze([]),
   hideSoldOut: false,
 });
 
@@ -43,6 +48,12 @@ export function normaliseScreeningFilters(value = {}) {
       ? [...new Set(value.certifications)]
       : [],
     formats: Array.isArray(value.formats) ? [...new Set(value.formats)] : [],
+    accessibility: Array.isArray(value.accessibility)
+      ? [...new Set(value.accessibility)]
+      : [],
+    programmeTypes: Array.isArray(value.programmeTypes)
+      ? [...new Set(value.programmeTypes)]
+      : [],
     hideSoldOut: Boolean(value.hideSoldOut),
   };
 }
@@ -55,6 +66,8 @@ export function countScreeningFilters(value) {
     filters.genres.length +
     filters.certifications.length +
     filters.formats.length +
+    filters.accessibility.length +
+    filters.programmeTypes.length +
     Number(filters.hideSoldOut)
   );
 }
@@ -90,11 +103,29 @@ export function screeningMatchesMetadataFilters(screening, value) {
   }
 
   if (filters.formats.length > 0) {
-    const formats = Array.isArray(screening.projection_formats)
-      ? screening.projection_formats
-      : [];
+    const formats = getScreeningFormatValues(screening);
 
     if (!filters.formats.some((format) => formats.includes(format))) {
+      return false;
+    }
+  }
+
+  if (filters.accessibility.length > 0) {
+    const accessibility = Array.isArray(screening.accessibility_features)
+      ? screening.accessibility_features
+      : [];
+
+    if (!filters.accessibility.some((feature) => accessibility.includes(feature))) {
+      return false;
+    }
+  }
+
+  if (filters.programmeTypes.length > 0) {
+    const programmeTypes = Array.isArray(screening.programme_types)
+      ? screening.programme_types
+      : [];
+
+    if (!filters.programmeTypes.some((type) => programmeTypes.includes(type))) {
       return false;
     }
   }
