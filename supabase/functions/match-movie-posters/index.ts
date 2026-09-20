@@ -1072,9 +1072,9 @@ async function persistDecision(
     if (target) action = "reused_tmdb";
   }
   target ??= moviesByNormalised.get(group.cleaned.identityKey);
-  target ??= linkedRows.find(
-    (movie) => (movieUsageKeys.get(movie.id)?.size ?? 0) <= 1,
-  );
+  // Never repurpose an arbitrary linked movie row for a different title
+  // identity. Reusing such a row can make unrelated screenings share one
+  // movie record when several groups are processed in the same run.
 
   const now = new Date().toISOString();
   const values = {
