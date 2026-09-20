@@ -1,48 +1,8 @@
 import { useId, useMemo, useState } from "react";
 import { londonDateHeading, londonTime, isToday } from "./time.js";
-import { posterUrl } from "./posterUrl.js";
+import ScreeningPoster from "./ScreeningPoster.jsx";
 import { groupScreeningsByMovie } from "./movieGrouping.js";
 import { getScreeningDisplayChips } from "./screeningPresentation.js";
-
-function Poster({ movie }) {
-  const posterPath =
-    movie && movie.match_status === "matched" ? movie.poster_path : null;
-  const url = posterUrl(posterPath);
-
-  if (url) {
-    return (
-      <img
-        className="poster movie-summary-poster"
-        src={url}
-        alt=""
-        loading="lazy"
-        referrerPolicy="no-referrer"
-      />
-    );
-  }
-
-  return (
-    <div
-      className="poster poster-placeholder movie-summary-poster"
-      aria-hidden="true"
-    >
-      <svg
-        width="22"
-        height="22"
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      >
-        <rect x="3" y="3" width="18" height="18" rx="2" />
-        <circle cx="8.5" cy="8.5" r="1.5" />
-        <path d="m21 15-5-5L5 21" />
-      </svg>
-    </div>
-  );
-}
 
 function ExpandIcon({ expanded }) {
   return (
@@ -153,6 +113,9 @@ function MovieGroup({ group, ratingsByTmdbId }) {
       ? ratingsByTmdbId?.get(tmdbId)
       : undefined;
   const screeningCount = group.screenings.length;
+  const verifiedArtworkUrl =
+    group.screenings.find((screening) => screening.verified_artwork_url)
+      ?.verified_artwork_url ?? null;
 
   return (
     <div className="movie-group">
@@ -163,7 +126,11 @@ function MovieGroup({ group, ratingsByTmdbId }) {
         aria-controls={regionId}
         onClick={() => setExpanded((current) => !current)}
       >
-        <Poster movie={group.movie} />
+        <ScreeningPoster
+          movie={group.movie}
+          verifiedArtworkUrl={verifiedArtworkUrl}
+          className="movie-summary-poster"
+        />
 
         <span className="movie-summary-body">
           <span className="movie-summary-title">{group.title}</span>
