@@ -3,6 +3,7 @@ import { londonDateHeading, londonTime, isToday } from "./time.js";
 import ScreeningPoster from "./ScreeningPoster.jsx";
 import { groupScreeningsByMovie } from "./movieGrouping.js";
 import { getScreeningDisplayChips } from "./screeningPresentation.js";
+import { formatRuntime, resolveMovieDetails } from "./movieDetails.js";
 
 function ExpandIcon({ expanded }) {
   return (
@@ -104,6 +105,46 @@ function ExpandedScreening({ screening }) {
   );
 }
 
+function MovieDetailSummary({ details }) {
+  const primary = [];
+  const runtime = formatRuntime(details.runtimeMinutes);
+
+  if (details.releaseYear) primary.push(String(details.releaseYear));
+  if (runtime) primary.push(runtime);
+  if (details.genres.length > 0) primary.push(details.genres.join(", "));
+
+  const hasPrimary = primary.length > 0;
+  const hasDirectors = details.directors.length > 0;
+  const hasCertification = Boolean(details.ukCertification);
+
+  if (!hasPrimary && !hasDirectors && !hasCertification) return null;
+
+  return (
+    <div className="movie-detail-summary">
+      {(hasPrimary || hasCertification) && (
+        <div className="movie-detail-primary">
+          {hasPrimary && <span>{primary.join(" · ")}</span>}
+          {hasCertification && (
+            <span
+              className="movie-certification-badge"
+              title="UK theatrical certification"
+            >
+              {details.ukCertification}
+            </span>
+          )}
+        </div>
+      )}
+
+      {hasDirectors && (
+        <div className="movie-detail-directors">
+          {details.directors.length === 1 ? "Director" : "Directors"}:{" "}
+          {details.directors.join(", ")}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MovieGroup({ group, ratingsByTmdbId }) {
   const [expanded, setExpanded] = useState(false);
   const regionId = useId();
@@ -124,6 +165,11 @@ function MovieGroup({ group, ratingsByTmdbId }) {
       )
     ),
   ];
+
+  const details =
+    group.screenings.find((screening) => screening.shared_movie_details)
+      ?.shared_movie_details ??
+    resolveMovieDetails(group.movie, group.screenings);
 
   return (
     <div className="movie-group">
@@ -165,10 +211,14 @@ function MovieGroup({ group, ratingsByTmdbId }) {
       </button>
 
       {expanded && (
-        <div className="movie-screenings" id={regionId}>
-          {group.screenings.map((screening) => (
-            <ExpandedScreening key={screening.id} screening={screening} />
-          ))}
+        <div className="movie-expanded" id={regionId}>
+          <MovieDetailSummary details={details} />
+
+          <div className="movie-screenings">
+            {group.screenings.map((screening) => (
+              <ExpandedScreening key={screening.id} screening={screening} />
+            ))}
+          </div>
         </div>
       )}
     </div>

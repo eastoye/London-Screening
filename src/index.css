@@ -536,12 +536,59 @@ body {
   transform: rotate(90deg);
 }
 
-.movie-screenings {
+.movie-expanded {
   margin: 0 4px 10px 78px;
+}
+
+.movie-detail-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  background: rgba(255, 255, 255, 0.55);
+  color: var(--ink-mute);
+  font-size: 13px;
+}
+
+.movie-detail-primary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.movie-detail-directors {
+  color: var(--ink-soft);
+}
+
+.movie-certification-badge {
+  display: inline-flex;
+  min-width: 24px;
+  min-height: 22px;
+  align-items: center;
+  justify-content: center;
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  color: var(--ink-soft);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.movie-screenings {
+  margin: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.55);
   overflow: hidden;
+}
+
+.movie-detail-summary + .movie-screenings {
+  border-radius: 0 0 8px 8px;
 }
 
 .movie-screening {
@@ -693,9 +740,13 @@ body {
     font-size: 15px;
   }
 
-  .movie-screenings {
+  .movie-expanded {
     margin-right: 2px;
     margin-left: 2px;
+  }
+
+  .movie-screenings {
+    margin: 0;
   }
 
   .movie-screening {
