@@ -1,0 +1,769 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import CinemaMultiSelect from "./CinemaMultiSelect.jsx";
+import DateTimeFilter from "./DateTimeFilter.jsx";
+import DistanceFilter from "./DistanceFilter.jsx";
+import FiltersDropdown from "./FiltersDropdown.jsx";
+import AuthModal from "./AuthModal.jsx";
+import { getAuthErrorMessage } from "./authApi.js";
+import WatchDataModal from "./WatchDataModal.jsx";
+import MovieImportModal from "./MovieImportModal.jsx";
+import {
+  DEFAULT_DATE_TIME_FILTER,
+  createDateTimeMatcher,
+  isDefaultDateTimeFilter,
+} from "./dateTimeFilter.js";
+import {
+  fetchAllUpcomingScreenings,
+  fetchCinemaLocations,
+} from "./screeningsApi.js";
+import { SUPABASE_CONFIGURED } from "./supabaseClient.js";
+import { londonDateKey } from "./time.js";
+import { DayGroup } from "./ScreeningRow.jsx";
+import MovieDayGroup from "./MovieDayGroup.jsx";
+import { useAuth } from "./useAuth.js";
+import { useTrakt } from "./useTrakt.js";
+import {
+  DEFAULT_SCREENING_FILTERS,
+  countScreeningFilters,
+  screeningMatchesMetadataFilters,
+} from "./screeningFilters.js";
+import {
+  DEFAULT_DISTANCE_FILTER,
+  buildCinemaDistanceData,
+  distanceIncludesCinema,
+  isDistanceFilterActive,
+} from "./distanceFilter.js";
+
+export default function App() {
+  const [screenings, setScreenings] = useState([]);
+  const [status, setStatus] = useState("loading");
+  const [errorMsg, setErrorMsg] = useState("");
+  const [search, setSearch] = useState("");
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountError, setAccountError] = useState("");
+  const [watchDataModalOpen, setWatchDataModalOpen] = useState(false);
+  const [movieImportModalOpen, setMovieImportModalOpen] = useState(false);
+  const [resultsView, setResultsView] = useState("time");
+  const [cinemaLocations, setCinemaLocations] = useState([]);
+  const [cinemaLocationsStatus, setCinemaLocationsStatus] = useState("loading");
+  const [cinemaLocationsError, setCinemaLocationsError] = useState("");
+  const [distanceFilter, setDistanceFilter] = useState(() => ({
+    ...DEFAULT_DISTANCE_FILTER,
+  }));
+
+  const [cinemaSelection, setCinemaSelection] = useState({
+    mode: "all",
+    names: [],
+  });
+
+  const [dateTimeFilter, setDateTimeFilter] = useState(() => ({
+    ...DEFAULT_DATE_TIME_FILTER,
+  }));
+
+  const [minRating, setMinRating] = useState(0);
+  const [screeningFilters, setScreeningFilters] = useState(() => ({
+    ...DEFAULT_SCREENING_FILTERS,
+  }));
+  const watchlistOnly = screeningFilters.watchlistOnly;
+
+  const auth = useAuth();
+  const trakt = useTrakt();
+
+  const traktBusy =
+    trakt.status === "exchanging" || trakt.status === "fetching";
+
+  const ratingFilterDisabled =
+    !trakt.isConnected ||
+    trakt.ratingsStatus === "idle" ||
+    trakt.ratingsStatus === "loading" ||
+    (trakt.ratingsStatus === "error" && trakt.ratings.length === 0);
+
+  let ratingFilterTitle;
+
+  if (!trakt.isConnected) {
+    ratingFilterTitle = "Connect Trakt to filter by your ratings";
+  } else if (
+    trakt.ratingsStatus === "idle" ||
+    trakt.ratingsStatus === "loading"
+  ) {
+    ratingFilterTitle = "Your Trakt ratings are loading";
+  } else if (
+    trakt.ratingsStatus === "error" &&
+    trakt.ratings.length === 0
+  ) {
+    ratingFilterTitle = "Your Trakt ratings are currently unavailable";
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const rows = await fetchAllUpcomingScreenings();
+
+        if (cancelled) return;
+
+        setScreenings(rows);
+        setStatus("ready");
+      } catch (err) {
+        if (cancelled) return;
+
+        setErrorMsg(err instanceof Error ? err.message : String(err));
+        setStatus("error");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const rows = await fetchCinemaLocations();
+        if (cancelled) return;
+        setCinemaLocations(rows);
+        setCinemaLocationsStatus("ready");
+      } catch (err) {
+        if (cancelled) return;
+        setCinemaLocationsError(err instanceof Error ? err.message : String(err));
+        setCinemaLocationsStatus("error");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!trakt.isConnected) {
+      setMinRating(0);
+      setScreeningFilters((current) => ({
+        ...current,
+        watchlistOnly: false,
+      }));
+      return;
+    }
+
+    if (trakt.watchlistStatus === "error") {
+      setScreeningFilters((current) => ({
+        ...current,
+        watchlistOnly: false,
+      }));
+    }
+  }, [trakt.isConnected, trakt.watchlistStatus]);
+
+  useEffect(() => {
+    if (auth.isAuthenticated) {
+      setAuthModalOpen(false);
+      setAccountError("");
+    }
+  }, [auth.isAuthenticated]);
+
+  const cinemas = useMemo(() => {
+    const names = new Set();
+
+    for (const screening of screenings) {
+      if (screening.cinema_name) {
+        names.add(screening.cinema_name);
+      }
+    }
+
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [screenings]);
+
+  const selectedCinemas = useMemo(() => {
+    if (cinemaSelection.mode === "all") {
+      return new Set(cinemas);
+    }
+
+    return new Set(
+      cinemaSelection.names.filter((cinemaName) =>
+        cinemas.includes(cinemaName)
+      )
+    );
+  }, [cinemas, cinemaSelection]);
+
+  const selectedCinemaCount = selectedCinemas.size;
+
+  const allCinemasSelected =
+    cinemas.length === 0 || selectedCinemaCount === cinemas.length;
+
+  const cinemaFilterActive =
+    cinemas.length > 0 && selectedCinemaCount < cinemas.length;
+
+  const noCinemasSelected =
+    cinemas.length > 0 && selectedCinemaCount === 0;
+
+  const dateTimeFilterActive = !isDefaultDateTimeFilter(dateTimeFilter);
+  const distanceFilterActive = isDistanceFilterActive(distanceFilter);
+  const distanceData = useMemo(
+    () => buildCinemaDistanceData(distanceFilter.origin, cinemas, cinemaLocations),
+    [distanceFilter.origin, cinemas, cinemaLocations]
+  );
+
+  const handleToggleCinema = (cinemaName) => {
+    setCinemaSelection((currentSelection) => {
+      const nextSelection = new Set(
+        currentSelection.mode === "all"
+          ? cinemas
+          : currentSelection.names.filter((name) => cinemas.includes(name))
+      );
+
+      if (nextSelection.has(cinemaName)) {
+        nextSelection.delete(cinemaName);
+      } else {
+        nextSelection.add(cinemaName);
+      }
+
+      if (nextSelection.size === cinemas.length) {
+        return {
+          mode: "all",
+          names: [],
+        };
+      }
+
+      return {
+        mode: "custom",
+        names: cinemas.filter((name) => nextSelection.has(name)),
+      };
+    });
+  };
+
+  const handleSelectAllCinemas = () => {
+    setCinemaSelection({
+      mode: "all",
+      names: [],
+    });
+  };
+
+  const handleClearAllCinemas = () => {
+    setCinemaSelection({
+      mode: "custom",
+      names: [],
+    });
+  };
+
+  const handleTraktDisconnect = () => {
+    setMinRating(0);
+    setScreeningFilters((current) => ({
+      ...current,
+      watchlistOnly: false,
+    }));
+    trakt.disconnect();
+  };
+
+  const openAuthModal = useCallback(() => {
+    setAccountError("");
+    setAuthModalOpen(true);
+  }, []);
+
+  const closeAuthModal = useCallback(() => {
+    setAuthModalOpen(false);
+  }, []);
+
+  const handleAccountLogout = useCallback(async () => {
+    if (accountBusy) return;
+
+    setAccountBusy(true);
+    setAccountError("");
+
+    try {
+      await auth.signOut();
+    } catch (logoutError) {
+      setAccountError(getAuthErrorMessage(logoutError, "logout"));
+    } finally {
+      setAccountBusy(false);
+    }
+  }, [accountBusy, auth]);
+
+  const openWatchDataModal = useCallback(() => {
+    setWatchDataModalOpen(true);
+  }, []);
+
+  const closeWatchDataModal = useCallback(() => {
+    setWatchDataModalOpen(false);
+  }, []);
+
+  const openMovieImportModal = useCallback(() => {
+    setMovieImportModalOpen(true);
+  }, []);
+
+  const closeMovieImportModal = useCallback(() => {
+    setMovieImportModalOpen(false);
+  }, []);
+
+  const connectTrakt = trakt.connect;
+
+  const handleConnectTrakt = useCallback(() => {
+    connectTrakt();
+  }, [connectTrakt]);
+
+  const ratingsByTmdbId = useMemo(() => {
+    const ratings = new Map();
+
+    for (const ratedMovie of trakt.ratings) {
+      ratings.set(ratedMovie.tmdbId, ratedMovie.rating);
+    }
+
+    return ratings;
+  }, [trakt.ratings]);
+
+  const watchlistTmdbIdSet = useMemo(
+    () => new Set(trakt.watchlistTmdbIds),
+    [trakt.watchlistTmdbIds]
+  );
+
+  const matchesDateTime = useMemo(
+    () => createDateTimeMatcher(dateTimeFilter),
+    [dateTimeFilter]
+  );
+
+  const filtered = useMemo(() => {
+    const titleQuery = search.trim().toLowerCase();
+
+    return screenings.filter((screening) => {
+      if (
+        titleQuery &&
+        !screening.movie_title.toLowerCase().includes(titleQuery)
+      ) {
+        return false;
+      }
+
+      if (!selectedCinemas.has(screening.cinema_name)) {
+        return false;
+      }
+
+      if (
+        distanceFilterActive &&
+        !distanceIncludesCinema(
+          distanceData.distanceByCinema.get(screening.cinema_name),
+          distanceFilter.maxMiles
+        )
+      ) {
+        return false;
+      }
+
+      if (!matchesDateTime(screening.start_time)) {
+        return false;
+      }
+
+      if (!screeningMatchesMetadataFilters(screening, screeningFilters)) {
+        return false;
+      }
+
+      const ratingFilterActive = minRating > 0;
+      const traktFilterActive = ratingFilterActive || watchlistOnly;
+
+      if (traktFilterActive) {
+        const tmdbId = Number(screening.movies?.tmdb_id);
+
+        if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
+          return false;
+        }
+
+        const userRating = ratingsByTmdbId.get(tmdbId);
+        const matchesRating =
+          ratingFilterActive &&
+          userRating !== undefined &&
+          userRating >= minRating;
+        const matchesWatchlist =
+          watchlistOnly && watchlistTmdbIdSet.has(tmdbId);
+
+        if (!matchesRating && !matchesWatchlist) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [
+    screenings,
+    search,
+    selectedCinemas,
+    distanceFilterActive,
+    distanceData,
+    distanceFilter.maxMiles,
+    matchesDateTime,
+    screeningFilters,
+    minRating,
+    ratingsByTmdbId,
+    watchlistOnly,
+    watchlistTmdbIdSet,
+  ]);
+
+  const groups = useMemo(() => {
+    const grouped = new Map();
+
+    for (const screening of filtered) {
+      const key = londonDateKey(screening.start_time);
+
+      if (!grouped.has(key)) {
+        grouped.set(key, []);
+      }
+
+      grouped.get(key).push(screening);
+    }
+
+    return Array.from(grouped.entries());
+  }, [filtered]);
+
+  let traktSummary = "Connected";
+
+  if (trakt.status === "fetching") {
+    traktSummary = "Loading Trakt data…";
+  } else if (trakt.status === "ready") {
+    const summaryParts = [];
+
+    if (trakt.ratingsStatus === "ready") {
+      summaryParts.push(
+        `${trakt.ratings.length} rating${
+          trakt.ratings.length === 1 ? "" : "s"
+        }`
+      );
+    }
+
+    if (trakt.watchlistStatus === "ready") {
+      summaryParts.push(
+        `${trakt.watchlistTmdbIds.length} watchlist film${
+          trakt.watchlistTmdbIds.length === 1 ? "" : "s"
+        }`
+      );
+    }
+
+    if (summaryParts.length > 0) {
+      traktSummary = summaryParts.join(" · ");
+    }
+  }
+
+  let emptyMessage = "No upcoming screenings match your current filters.";
+
+  if (noCinemasSelected) {
+    emptyMessage =
+      "No cinemas are selected. Select at least one cinema to see screenings.";
+  } else if (
+    allCinemasSelected &&
+    search.trim() === "" &&
+    !dateTimeFilterActive &&
+    !distanceFilterActive &&
+    minRating === 0 &&
+    countScreeningFilters(screeningFilters) === 0
+  ) {
+    emptyMessage = "No upcoming screenings found.";
+  }
+
+  return (
+    <div className="app">
+      <header className="site-header">
+        <div className="site-heading-row">
+          <div>
+            <h1 className="site-title">London Screenings</h1>
+
+            <p className="site-subtitle">
+              Upcoming screenings in London, updated from each cinema&apos;s
+              programme.
+            </p>
+          </div>
+
+          <div className="header-actions">
+            <div className="account-control">
+              {auth.loading ? (
+                <span className="account-loading" role="status">
+                  Checking account…
+                </span>
+              ) : auth.user ? (
+                <div className="account-connected">
+                  <span className="account-email" title={auth.user.email}>
+                    {auth.user.email}
+                  </span>
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={handleAccountLogout}
+                    disabled={accountBusy}
+                  >
+                    {accountBusy ? "Logging out…" : "Log out"}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  className="account-button"
+                  type="button"
+                  onClick={openAuthModal}
+                >
+                  Log in
+                </button>
+              )}
+            </div>
+
+            {trakt.isConnected ? (
+              <div className="trakt-connected">
+                <span className="trakt-summary">{traktSummary}</span>
+
+                <div className="trakt-actions">
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={openMovieImportModal}
+                    disabled={traktBusy}
+                  >
+                    Import movie data
+                  </button>
+
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={trakt.refresh}
+                    disabled={traktBusy}
+                  >
+                    Refresh
+                  </button>
+
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={handleTraktDisconnect}
+                  >
+                    Disconnect Trakt
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                className="trakt-button"
+                type="button"
+                onClick={openWatchDataModal}
+                disabled={trakt.status === "exchanging"}
+              >
+                {trakt.status === "exchanging"
+                  ? "Connecting…"
+                  : "Connect watch data"}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {(accountError || auth.initializationError) && (
+          <div className="account-message error" role="alert">
+            <span>{accountError || auth.initializationError}</span>
+          </div>
+        )}
+
+        {auth.notice && (
+          <div
+            className={`account-message ${auth.notice.type}`}
+            role={auth.notice.type === "error" ? "alert" : "status"}
+          >
+            <span>{auth.notice.message}</span>
+            <button
+              className="text-button"
+              type="button"
+              onClick={auth.clearNotice}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
+
+        {trakt.error && (
+          <div className="trakt-error" role="status">
+            <span>{trakt.error}</span>
+
+            {trakt.isConnected && (
+              <button
+                className="text-button"
+                type="button"
+                onClick={trakt.refresh}
+                disabled={traktBusy}
+              >
+                Try again
+              </button>
+            )}
+          </div>
+        )}
+      </header>
+
+      <div className="controls">
+        <label className="search">
+          <span className="search-icon" aria-hidden="true">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <circle cx="11" cy="11" r="8" />
+              <line x1="21" y1="21" x2="16.65" y2="16.65" />
+            </svg>
+          </span>
+
+          <input
+            type="search"
+            placeholder="Search movie title…"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            aria-label="Search movie title"
+          />
+        </label>
+
+        <CinemaMultiSelect
+          cinemas={cinemas}
+          selectedCinemas={selectedCinemas}
+          onToggleCinema={handleToggleCinema}
+          onSelectAll={handleSelectAllCinemas}
+          onClearAll={handleClearAllCinemas}
+          disabled={status !== "ready" || cinemas.length === 0}
+        />
+
+        <DistanceFilter
+          value={distanceFilter}
+          onApply={setDistanceFilter}
+          cinemas={cinemas}
+          cinemaLocations={cinemaLocations}
+          locationsStatus={cinemaLocationsStatus}
+          locationsError={cinemaLocationsError}
+          disabled={status !== "ready" || cinemas.length === 0}
+        />
+
+        <select
+          className="filter-select rating-filter"
+          value={minRating}
+          onChange={(event) => setMinRating(Number(event.target.value))}
+          aria-label="Filter by your Trakt rating"
+          disabled={ratingFilterDisabled}
+          title={ratingFilterTitle}
+        >
+          <option value={0}>All ratings</option>
+          <option value={6}>My rating 6+</option>
+          <option value={7}>My rating 7+</option>
+          <option value={8}>My rating 8+</option>
+          <option value={9}>My rating 9+</option>
+          <option value={10}>My rating 10</option>
+        </select>
+
+        <FiltersDropdown
+          value={screeningFilters}
+          onApply={setScreeningFilters}
+          isConnected={trakt.isConnected}
+          watchlistStatus={trakt.watchlistStatus}
+          watchlistError={trakt.watchlistError}
+          watchlistCount={trakt.watchlistTmdbIds.length}
+          disabled={status !== "ready"}
+        />
+
+        <DateTimeFilter
+          value={dateTimeFilter}
+          onApply={setDateTimeFilter}
+          disabled={status !== "ready"}
+        />
+      </div>
+
+      {!SUPABASE_CONFIGURED && (
+        <div className="status error">
+          Supabase is not configured. Set <code>VITE_SUPABASE_URL</code> and{" "}
+          <code>VITE_SUPABASE_ANON_KEY</code> in the environment.
+        </div>
+      )}
+
+      {SUPABASE_CONFIGURED && status === "loading" && (
+        <div className="status">
+          <div className="spinner" />
+          Loading upcoming screenings…
+        </div>
+      )}
+
+      {SUPABASE_CONFIGURED && status === "error" && (
+        <div className="status error">
+          Couldn&apos;t load screenings right now. {errorMsg}
+        </div>
+      )}
+
+      {SUPABASE_CONFIGURED && status === "ready" && groups.length === 0 && (
+        <div className="status">{emptyMessage}</div>
+      )}
+
+      {SUPABASE_CONFIGURED && status === "ready" && groups.length > 0 && (
+        <main>
+          <div className="results-view-controls">
+            <button
+              className="results-view-toggle"
+              type="button"
+              onClick={() =>
+                setResultsView((current) =>
+                  current === "time" ? "movie" : "time"
+                )
+              }
+            >
+              {resultsView === "time" ? "By movie" : "By time"}
+            </button>
+          </div>
+
+          {groups.map(([key, rows]) => (
+            resultsView === "time" ? (
+              <DayGroup
+                key={key}
+                dateKey={key}
+                screenings={rows}
+                ratingsByTmdbId={ratingsByTmdbId}
+              />
+            ) : (
+              <MovieDayGroup
+                key={key}
+                dateKey={key}
+                screenings={rows}
+                ratingsByTmdbId={ratingsByTmdbId}
+              />
+            )
+          ))}
+        </main>
+      )}
+
+      <footer className="footer">
+        {screenings.length > 0 && status === "ready" && (
+          <span>
+            {filtered.length} upcoming screening
+            {filtered.length === 1 ? "" : "s"}
+
+            {cinemaFilterActive
+              ? selectedCinemaCount === 0
+                ? " with no cinemas selected."
+                : ` across ${selectedCinemaCount} selected cinema${
+                    selectedCinemaCount === 1 ? "" : "s"
+                  }.`
+              : "."}
+          </span>
+        )}
+      </footer>
+
+      <AuthModal
+        isAuthenticated={auth.isAuthenticated}
+        isOpen={authModalOpen}
+        onClose={closeAuthModal}
+        onSignIn={auth.signIn}
+        onSignUp={auth.signUp}
+      />
+
+      <WatchDataModal
+        isOpen={watchDataModalOpen}
+        onClose={closeWatchDataModal}
+        onConnectTrakt={handleConnectTrakt}
+        isConnecting={trakt.status === "exchanging"}
+      />
+
+      <MovieImportModal
+        isOpen={movieImportModalOpen}
+        onClose={closeMovieImportModal}
+        onImport={trakt.importMovies}
+      />
+    </div>
+  );
+}
