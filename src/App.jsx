@@ -5,6 +5,8 @@ import DistanceFilter from "./DistanceFilter.jsx";
 import FiltersDropdown from "./FiltersDropdown.jsx";
 import WatchDataModal from "./WatchDataModal.jsx";
 import MovieImportModal from "./MovieImportModal.jsx";
+import AuthModal from "./AuthModal.jsx";
+import { getAuthErrorMessage } from "./authApi.js";
 import {
   DEFAULT_DATE_TIME_FILTER,
   createDateTimeMatcher,
@@ -18,6 +20,7 @@ import { SUPABASE_CONFIGURED } from "./supabaseClient.js";
 import { londonDateKey } from "./time.js";
 import { DayGroup } from "./ScreeningRow.jsx";
 import MovieDayGroup from "./MovieDayGroup.jsx";
+import { useAuth } from "./useAuth.js";
 import { useTrakt } from "./useTrakt.js";
 import {
   DEFAULT_SCREENING_FILTERS,
@@ -36,6 +39,9 @@ export default function App() {
   const [status, setStatus] = useState("loading");
   const [errorMsg, setErrorMsg] = useState("");
   const [search, setSearch] = useState("");
+  const [authModalOpen, setAuthModalOpen] = useState(false);
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [accountError, setAccountError] = useState("");
   const [watchDataModalOpen, setWatchDataModalOpen] = useState(false);
   const [movieImportModalOpen, setMovieImportModalOpen] = useState(false);
   const [resultsView, setResultsView] = useState("time");
@@ -62,6 +68,7 @@ export default function App() {
   const watchlistOnly = screeningFilters.watchlistOnly;
 
   const trakt = useTrakt();
+  const auth = useAuth();
 
   const traktBusy =
     trakt.status === "exchanging" || trakt.status === "fetching";
@@ -150,6 +157,13 @@ export default function App() {
       }));
     }
   }, [trakt.isConnected, trakt.watchlistStatus]);
+
+  useEffect(() => {
+    if (auth.isAuthenticated) {
+      setAuthModalOpen(false);
+      setAccountError("");
+    }
+  }, [auth.isAuthenticated]);
 
   const cinemas = useMemo(() => {
     const names = new Set();
@@ -243,6 +257,30 @@ export default function App() {
     }));
     trakt.disconnect();
   };
+
+  const openAuthModal = useCallback(() => {
+    setAccountError("");
+    setAuthModalOpen(true);
+  }, []);
+
+  const closeAuthModal = useCallback(() => {
+    setAuthModalOpen(false);
+  }, []);
+
+  const handleAccountLogout = useCallback(async () => {
+    if (accountBusy) return;
+
+    setAccountBusy(true);
+    setAccountError("");
+
+    try {
+      await auth.signOut();
+    } catch (logoutError) {
+      setAccountError(getAuthErrorMessage(logoutError, "logout"));
+    } finally {
+      setAccountBusy(false);
+    }
+  }, [accountBusy, auth]);
 
   const openWatchDataModal = useCallback(() => {
     setWatchDataModalOpen(true);
@@ -432,7 +470,38 @@ export default function App() {
             </p>
           </div>
 
-          {trakt.isConnected ? (
+          <div className="header-actions">
+            <div className="account-control">
+              {auth.loading ? (
+                <span className="account-loading" role="status">
+                  Checking account…
+                </span>
+              ) : auth.user ? (
+                <div className="account-connected">
+                  <span className="account-email" title={auth.user.email}>
+                    {auth.user.email}
+                  </span>
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={handleAccountLogout}
+                    disabled={accountBusy}
+                  >
+                    {accountBusy ? "Logging out…" : "Log out"}
+                  </button>
+                </div>
+              ) : (
+                <button
+                  className="account-button"
+                  type="button"
+                  onClick={openAuthModal}
+                >
+                  Log in
+                </button>
+              )}
+            </div>
+
+            {trakt.isConnected ? (
             <div className="trakt-connected">
               <span className="trakt-summary">{traktSummary}</span>
 
@@ -476,7 +545,30 @@ export default function App() {
                 : "Connect watch data"}
             </button>
           )}
+          </div>
         </div>
+
+        {(accountError || auth.initializationError) && (
+          <div className="account-message error" role="alert">
+            <span>{accountError || auth.initializationError}</span>
+          </div>
+        )}
+
+        {auth.notice && (
+          <div
+            className={`account-message ${auth.notice.type}`}
+            role={auth.notice.type === "error" ? "alert" : "status"}
+          >
+            <span>{auth.notice.message}</span>
+            <button
+              className="text-button"
+              type="button"
+              onClick={auth.clearNotice}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {trakt.error && (
           <div className="trakt-error" role="status">
@@ -651,6 +743,17 @@ export default function App() {
           </span>
         )}
       </footer>
+
+      <AuthModal
+        isAuthenticated={auth.isAuthenticated}
+        isOpen={authModalOpen || auth.recoveryMode}
+        onClose={closeAuthModal}
+        onSignIn={auth.signIn}
+        onSignUp={auth.signUp}
+        onResetPassword={auth.resetPassword}
+        onUpdatePassword={auth.updateUserPassword}
+        recoveryMode={auth.recoveryMode}
+      />
 
       <WatchDataModal
         isOpen={watchDataModalOpen}

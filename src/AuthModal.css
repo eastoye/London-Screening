@@ -221,6 +221,28 @@
   text-align: center;
 }
 
+.auth-forgot-link {
+  margin: -4px 0 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.auth-forgot-link:hover {
+  text-decoration: underline;
+}
+
+.auth-forgot-link:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
 .auth-confirmation-actions {
   display: grid;
   gap: 13px;
@@ -232,6 +254,7 @@
 .auth-mode-switch button:focus-visible,
 .auth-form input:focus-visible,
 .auth-submit:focus-visible,
+.auth-forgot-link:focus-visible,
 .auth-confirmation-actions .text-button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;

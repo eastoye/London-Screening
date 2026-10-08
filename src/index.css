@@ -73,6 +73,22 @@ body {
   font-size: 13px;
 }
 
+.header-actions {
+  display: flex;
+  min-width: 0;
+  flex: none;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.account-control {
+  display: flex;
+  min-width: 0;
+  justify-content: flex-end;
+}
+
+.account-button,
 .trakt-button {
   display: inline-flex;
   flex: none;
@@ -98,6 +114,60 @@ body {
 .trakt-button:disabled {
   cursor: wait;
   opacity: 0.65;
+}
+
+.account-button:focus-visible,
+.trakt-button:focus-visible {
+  outline: 3px solid rgba(184, 52, 26, 0.18);
+  outline-offset: 2px;
+}
+
+.account-connected {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+.account-email {
+  max-width: 260px;
+  overflow: hidden;
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-loading {
+  min-height: 35px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--ink-mute);
+  font-size: 12px;
+}
+
+.account-message {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 9px 11px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.account-message.error {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.account-message.success {
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-soft);
 }
 
 .trakt-connected {
@@ -706,6 +776,22 @@ body {
     gap: 12px;
   }
 
+  .header-actions {
+    width: 100%;
+    align-items: flex-start;
+  }
+
+  .account-control,
+  .account-connected {
+    max-width: 100%;
+    justify-content: flex-start;
+  }
+
+  .account-email {
+    max-width: min(72vw, 300px);
+  }
+
+  .account-button,
   .trakt-button {
     align-self: flex-start;
   }

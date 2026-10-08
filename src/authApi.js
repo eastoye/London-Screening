@@ -18,6 +18,8 @@ const CONTEXT_FALLBACKS = {
   logout: "We couldn't log you out. Please try again.",
   restore: "We couldn't restore your account session. You can still browse screenings.",
   signup: "We couldn't create your account. Please try again.",
+  recovery: "We couldn't send the password reset email. Please try again.",
+  updatePassword: "We couldn't update your password. Please try again.",
 };
 
 export class AuthUiError extends Error {
@@ -88,6 +90,35 @@ export function validateAuthForm({
   return "";
 }
 
+export function validateResetEmailForm({ email }) {
+  const cleanEmail = typeof email === "string" ? email.trim() : "";
+
+  if (!EMAIL_PATTERN.test(cleanEmail)) {
+    return "Enter a valid email address.";
+  }
+
+  return "";
+}
+
+export function validateUpdatePasswordForm({
+  password,
+  confirmPassword = "",
+}) {
+  if (typeof password !== "string" || password.length === 0) {
+    return "Enter your new password.";
+  }
+
+  if (password.length < 8) {
+    return "Use at least 8 characters for your password.";
+  }
+
+  if (password !== confirmPassword) {
+    return "The passwords do not match.";
+  }
+
+  return "";
+}
+
 export function parseAuthRedirectHash(hash) {
   if (typeof hash !== "string" || hash.length < 2) {
     return null;
@@ -117,6 +148,13 @@ export function parseAuthRedirectHash(hash) {
     return {
       kind: "confirmation",
       message: "Email confirmed. You're now logged in.",
+    };
+  }
+
+  if (type === "recovery" && hasSessionTokens) {
+    return {
+      kind: "recovery",
+      message: "Set a new password for your account.",
     };
   }
 
@@ -199,6 +237,30 @@ export function createAuthApi(client) {
       if (error) {
         throw authError(error, "logout");
       }
+    },
+
+    async resetPassword(email, redirectTo) {
+      const options = redirectTo ? { redirectTo } : undefined;
+      const { error } = await client.auth.resetPasswordForEmail(
+        email.trim().toLowerCase(),
+        options
+      );
+
+      if (error) {
+        throw authError(error, "recovery");
+      }
+    },
+
+    async updateUserPassword(newPassword) {
+      const { data, error } = await client.auth.updateUser({
+        password: newPassword,
+      });
+
+      if (error) {
+        throw authError(error, "updatePassword");
+      }
+
+      return data;
     },
   };
 }

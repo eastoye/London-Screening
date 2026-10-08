@@ -7,6 +7,8 @@ import {
   observeAuthSession,
   parseAuthRedirectHash,
   validateAuthForm,
+  validateResetEmailForm,
+  validateUpdatePasswordForm,
 } from "./authApi.js";
 
 function createClient(authMethods = {}) {
@@ -19,6 +21,8 @@ function createClient(authMethods = {}) {
       signInWithPassword: async () => ({ data: null, error: null }),
       signOut: async () => ({ error: null }),
       signUp: async () => ({ data: null, error: null }),
+      resetPasswordForEmail: async () => ({ error: null }),
+      updateUser: async () => ({ data: null, error: null }),
       ...authMethods,
     },
   };
@@ -330,4 +334,154 @@ test("email-confirmation redirects are recognised without treating Trakt query c
   assert.equal(parseAuthRedirectHash(""), null);
   assert.equal(parseAuthRedirectHash("#section=screenings"), null);
   assert.equal(parseAuthRedirectHash("?code=trakt-code&state=trakt-state"), null);
+});
+
+test("recovery redirects are recognised from the URL hash", () => {
+  const recovery = parseAuthRedirectHash(
+    "#access_token=recovery-access&refresh_token=recovery-refresh&type=recovery"
+  );
+
+  assert.deepEqual(recovery, {
+    kind: "recovery",
+    message: "Set a new password for your account.",
+  });
+});
+
+test("resetPasswordForEmail normalises the email and passes the redirect URL", async () => {
+  let resetPayload;
+  const api = createAuthApi(
+    createClient({
+      resetPasswordForEmail: async (email, options) => {
+        resetPayload = { email, options };
+        return { error: null };
+      },
+    })
+  );
+
+  await api.resetPassword("  Person@Example.com ", "https://example.com/reset");
+
+  assert.deepEqual(resetPayload, {
+    email: "person@example.com",
+    options: { redirectTo: "https://example.com/reset" },
+  });
+});
+
+test("resetPasswordForEmail without a redirect URL omits options", async () => {
+  let resetPayload;
+  const api = createAuthApi(
+    createClient({
+      resetPasswordForEmail: async (email, options) => {
+        resetPayload = { email, options };
+        return { error: null };
+      },
+    })
+  );
+
+  await api.resetPassword("person@example.com");
+
+  assert.equal(resetPayload.email, "person@example.com");
+  assert.equal(resetPayload.options, undefined);
+});
+
+test("resetPasswordForEmail errors are converted to friendly messages", async () => {
+  const api = createAuthApi(
+    createClient({
+      resetPasswordForEmail: async () => ({
+        error: {
+          code: "over_email_send_rate_limit",
+          message: "raw rate limit detail",
+        },
+      }),
+    })
+  );
+
+  await assert.rejects(
+    api.resetPassword("person@example.com"),
+    (error) =>
+      error instanceof AuthUiError &&
+      error.message ===
+        "Too many confirmation emails were requested. Please wait before trying again." &&
+      !error.message.includes("raw rate limit detail")
+  );
+});
+
+test("updateUserPassword sends the new password and returns the updated user", async () => {
+  let updatePayload;
+  const updatedUser = { id: "user-7", email: "person@example.com" };
+  const api = createAuthApi(
+    createClient({
+      updateUser: async (payload) => {
+        updatePayload = payload;
+        return { data: { user: updatedUser }, error: null };
+      },
+    })
+  );
+
+  const result = await api.updateUserPassword("newpassword123");
+
+  assert.deepEqual(updatePayload, { password: "newpassword123" });
+  assert.deepEqual(result, { user: updatedUser });
+});
+
+test("updateUserPassword errors are converted to friendly messages", async () => {
+  const api = createAuthApi(
+    createClient({
+      updateUser: async () => ({
+        data: null,
+        error: {
+          code: "weak_password",
+          message: "raw weak password detail",
+        },
+      }),
+    })
+  );
+
+  await assert.rejects(
+    api.updateUserPassword("weak"),
+    (error) =>
+      error instanceof AuthUiError &&
+      error.message ===
+        "Choose a stronger password. Use at least 8 characters." &&
+      !error.message.includes("raw weak password detail")
+  );
+});
+
+test("validateResetEmailForm rejects invalid email addresses", () => {
+  assert.equal(
+    validateResetEmailForm({ email: "invalid" }),
+    "Enter a valid email address."
+  );
+  assert.equal(
+    validateResetEmailForm({ email: "" }),
+    "Enter a valid email address."
+  );
+  assert.equal(
+    validateResetEmailForm({ email: "person@example.com" }),
+    ""
+  );
+});
+
+test("validateUpdatePasswordForm enforces length and confirmation match", () => {
+  assert.equal(
+    validateUpdatePasswordForm({ password: "" }),
+    "Enter your new password."
+  );
+  assert.equal(
+    validateUpdatePasswordForm({ password: "short" }),
+    "Use at least 8 characters for your password."
+  );
+  assert.equal(
+    validateUpdatePasswordForm({
+      password: "password123",
+      confirmPassword: "password124",
+    }),
+    "The passwords do not match."
+  );
+  assert.equal(
+    validateUpdatePasswordForm({
+      password: "password123",
+      confirmPassword: "password123",
+    }),
+    ""
+  );
 });

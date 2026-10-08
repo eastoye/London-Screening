@@ -1,5 +1,10 @@
 import { useEffect, useId, useRef, useState } from "react";
-import { getAuthErrorMessage, validateAuthForm } from "./authApi.js";
+import {
+  getAuthErrorMessage,
+  validateAuthForm,
+  validateResetEmailForm,
+  validateUpdatePasswordForm,
+} from "./authApi.js";
 import "./AuthModal.css";
 
 function CloseIcon() {
@@ -25,6 +30,9 @@ export default function AuthModal({
   onClose,
   onSignIn,
   onSignUp,
+  onResetPassword,
+  onUpdatePassword,
+  recoveryMode = false,
 }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
@@ -33,6 +41,8 @@ export default function AuthModal({
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [confirmationEmail, setConfirmationEmail] = useState("");
+  const [resetSent, setResetSent] = useState(false);
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
 
   const dialogRef = useRef(null);
   const emailRef = useRef(null);
@@ -59,6 +69,8 @@ export default function AuthModal({
     setError("");
     setSubmitting(false);
     setConfirmationEmail("");
+    setResetSent(false);
+    setShowForgotPassword(false);
 
     const focusTimer = window.setTimeout(() => {
       emailRef.current?.focus();
@@ -105,10 +117,10 @@ export default function AuthModal({
   }, [isOpen, onClose]);
 
   useEffect(() => {
-    if (isOpen && isAuthenticated) {
+    if (isOpen && isAuthenticated && !recoveryMode) {
       onClose();
     }
-  }, [isAuthenticated, isOpen, onClose]);
+  }, [isAuthenticated, isOpen, onClose, recoveryMode]);
 
   useEffect(() => {
     if (confirmationEmail) {
@@ -132,8 +144,87 @@ export default function AuthModal({
     setConfirmPassword("");
     setError("");
     setConfirmationEmail("");
+    setShowForgotPassword(false);
 
     window.setTimeout(() => emailRef.current?.focus(), 0);
+  };
+
+  const handleForgotPassword = () => {
+    if (submittingRef.current) return;
+
+    setError("");
+    setPassword("");
+    setConfirmPassword("");
+    setShowForgotPassword(true);
+
+    window.setTimeout(() => emailRef.current?.focus(), 0);
+  };
+
+  const handleBackToLogin = () => {
+    if (submittingRef.current) return;
+
+    setShowForgotPassword(false);
+    setResetSent(false);
+    setError("");
+
+    window.setTimeout(() => emailRef.current?.focus(), 0);
+  };
+
+  const handleSendResetEmail = async (event) => {
+    event.preventDefault();
+
+    if (submittingRef.current) return;
+
+    const validationError = validateResetEmailForm({ email });
+
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
+    submittingRef.current = true;
+    setSubmitting(true);
+    setError("");
+
+    try {
+      await onResetPassword(email.trim());
+      setResetSent(true);
+    } catch (resetError) {
+      setError(getAuthErrorMessage(resetError, "recovery"));
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
+  };
+
+  const handleUpdatePassword = async (event) => {
+    event.preventDefault();
+
+    if (submittingRef.current) return;
+
+    const validationError = validateUpdatePasswordForm({
+      password,
+      confirmPassword,
+    });
+
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+
+    submittingRef.current = true;
+    setSubmitting(true);
+    setError("");
+
+    try {
+      await onUpdatePassword(password);
+      onClose();
+    } catch (updateError) {
+      setError(getAuthErrorMessage(updateError, "updatePassword"));
+    } finally {
+      submittingRef.current = false;
+      setSubmitting(false);
+    }
   };
 
   const handleSubmit = async (event) => {
@@ -190,6 +281,95 @@ export default function AuthModal({
       close();
     }
   };
+
+  if (recoveryMode) {
+    return (
+      <div className="auth-backdrop" onPointerDown={handleBackdropPointerDown}>
+        <section
+          ref={dialogRef}
+          className="auth-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
+          aria-describedby={descriptionId}
+        >
+          <div className="auth-topbar">
+            <span aria-hidden="true" />
+
+            <button
+              className="auth-icon-button"
+              type="button"
+              onClick={close}
+              disabled={submitting}
+              aria-label="Close account dialog"
+            >
+              <CloseIcon />
+            </button>
+          </div>
+
+          <div className="auth-content">
+            <div className="auth-intro">
+              <span className="auth-eyebrow">Password recovery</span>
+              <h2 id={titleId}>Set a new password</h2>
+              <p id={descriptionId}>
+                Choose a new password for your London Screenings account.
+              </p>
+            </div>
+
+            <form className="auth-form" onSubmit={handleUpdatePassword} noValidate>
+              <label>
+                <span>New password</span>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={8}
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  disabled={submitting}
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={error ? messageId : undefined}
+                />
+              </label>
+
+              <label>
+                <span>Confirm new password</span>
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={8}
+                  value={confirmPassword}
+                  onChange={(event) =>
+                    setConfirmPassword(event.target.value)
+                  }
+                  disabled={submitting}
+                  aria-invalid={Boolean(error)}
+                  aria-describedby={error ? messageId : undefined}
+                />
+              </label>
+
+              <p className="auth-password-hint">
+                Use at least 8 characters.
+              </p>
+
+              {error && (
+                <div id={messageId} className="auth-error" role="alert">
+                  {error}
+                </div>
+              )}
+
+              <button
+                className="auth-submit"
+                type="submit"
+                disabled={submitting}
+              >
+                {submitting ? "Updating password…" : "Update password"}
+              </button>
+            </form>
+          </div>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="auth-backdrop" onPointerDown={handleBackdropPointerDown}>
@@ -252,6 +432,94 @@ export default function AuthModal({
                 </button>
               </div>
             </div>
+          ) : showForgotPassword ? (
+            resetSent ? (
+              <div className="auth-confirmation" role="status">
+                <span className="auth-eyebrow">Check your inbox</span>
+                <h2
+                  id={titleId}
+                  ref={confirmationHeadingRef}
+                  tabIndex="-1"
+                >
+                  Reset link sent
+                </h2>
+                <p id={descriptionId}>
+                  If an account exists for <strong>{email.trim()}</strong>,
+                  we&apos;ve sent a link to reset your password. Open it to
+                  choose a new password.
+                </p>
+
+                <div className="auth-confirmation-actions">
+                  <button
+                    className="auth-submit"
+                    type="button"
+                    onClick={close}
+                  >
+                    Close
+                  </button>
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={handleBackToLogin}
+                  >
+                    Back to log in
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="auth-intro">
+                  <span className="auth-eyebrow">Password recovery</span>
+                  <h2 id={titleId}>Reset your password</h2>
+                  <p id={descriptionId}>
+                    Enter your email and we&apos;ll send you a link to set a
+                    new password.
+                  </p>
+                </div>
+
+                <form className="auth-form" onSubmit={handleSendResetEmail} noValidate>
+                  <label>
+                    <span>Email</span>
+                    <input
+                      ref={emailRef}
+                      type="email"
+                      autoComplete="email"
+                      inputMode="email"
+                      value={email}
+                      onChange={(event) => setEmail(event.target.value)}
+                      disabled={submitting}
+                      aria-invalid={Boolean(error)}
+                      aria-describedby={error ? messageId : undefined}
+                    />
+                  </label>
+
+                  {error && (
+                    <div id={messageId} className="auth-error" role="alert">
+                      {error}
+                    </div>
+                  )}
+
+                  <button
+                    className="auth-submit"
+                    type="submit"
+                    disabled={submitting}
+                  >
+                    {submitting ? "Sending reset link…" : "Send reset link"}
+                  </button>
+                </form>
+
+                <p className="auth-separation-note">
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={handleBackToLogin}
+                    disabled={submitting}
+                  >
+                    Back to log in
+                  </button>
+                </p>
+              </>
+            )
           ) : (
             <>
               <div className="auth-intro">
@@ -318,6 +586,17 @@ export default function AuthModal({
                     aria-describedby={error ? messageId : undefined}
                   />
                 </label>
+
+                {mode === "login" && (
+                  <button
+                    className="auth-forgot-link"
+                    type="button"
+                    onClick={handleForgotPassword}
+                    disabled={submitting}
+                  >
+                    Forgot your password?
+                  </button>
+                )}
 
                 {mode === "signup" && (
                   <label>
