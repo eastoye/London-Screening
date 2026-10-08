@@ -347,6 +347,24 @@ test("recovery redirects are recognised from the URL hash", () => {
   });
 });
 
+test("expired recovery links show password-reset wording, not email-confirmation wording", () => {
+  const expiredRecovery = parseAuthRedirectHash(
+    "#error=access_denied&error_code=otp_expired&error_description=expired&type=recovery"
+  );
+
+  assert.equal(expiredRecovery.kind, "error");
+  assert.match(expiredRecovery.message, /password reset/i);
+  assert.doesNotMatch(expiredRecovery.message, /email confirmation/i);
+
+  const failedRecovery = parseAuthRedirectHash(
+    "#error=access_denied&error_description=denied&type=recovery"
+  );
+
+  assert.equal(failedRecovery.kind, "error");
+  assert.match(failedRecovery.message, /reset your password/i);
+  assert.doesNotMatch(failedRecovery.message, /confirm your email/i);
+});
+
 test("resetPasswordForEmail normalises the email and passes the redirect URL", async () => {
   let resetPayload;
   const api = createAuthApi(

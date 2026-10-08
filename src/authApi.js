@@ -128,21 +128,26 @@ export function parseAuthRedirectHash(hash) {
   const errorCode = params.get("error_code");
   const error = params.get("error");
 
+  const type = params.get("type");
+  const hasSessionTokens =
+    Boolean(params.get("access_token")) && Boolean(params.get("refresh_token"));
+
   if (errorCode || error) {
+    const isRecovery = type === "recovery";
     const message =
       errorCode === "otp_expired"
-        ? "This email confirmation link has expired or has already been used. Try logging in, or create the account again if it was not confirmed."
-        : "We couldn't confirm your email. Please request a new confirmation email and try again.";
+        ? isRecovery
+          ? "This password reset link has expired or has already been used. Request a new reset link from the log in page."
+          : "This email confirmation link has expired or has already been used. Try logging in, or create the account again if it was not confirmed."
+        : isRecovery
+          ? "We couldn't reset your password. Please request a new reset link and try again."
+          : "We couldn't confirm your email. Please request a new confirmation email and try again.";
 
     return {
       kind: "error",
       message,
     };
   }
-
-  const type = params.get("type");
-  const hasSessionTokens =
-    Boolean(params.get("access_token")) && Boolean(params.get("refresh_token"));
 
   if ((type === "signup" || type === "email") && hasSessionTokens) {
     return {

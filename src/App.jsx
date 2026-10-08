@@ -265,7 +265,8 @@ export default function App() {
 
   const closeAuthModal = useCallback(() => {
     setAuthModalOpen(false);
-  }, []);
+    auth.clearRecoveryMode();
+  }, [auth]);
 
   const handleAccountLogout = useCallback(async () => {
     if (accountBusy) return;
