@@ -47,10 +47,14 @@ function toggleSelection(values, value) {
 export default function FiltersDropdown({
   value,
   onApply,
-  isConnected,
-  watchlistStatus,
-  watchlistError,
-  watchlistCount = 0,
+  nativeAuthenticated,
+  nativeWatchlistStatus,
+  nativeWatchlistError,
+  nativeWatchlistCount = 0,
+  traktConnected,
+  traktWatchlistStatus,
+  traktWatchlistError,
+  traktWatchlistCount = 0,
   disabled = false,
 }) {
   const appliedFilters = useMemo(() => normaliseScreeningFilters(value), [value]);
@@ -60,26 +64,59 @@ export default function FiltersDropdown({
   const triggerRef = useRef(null);
   const panelId = useId();
   const headingId = useId();
-  const watchlistOptionId = useId();
-  const watchlistStatusId = useId();
+  const nativeWatchlistOptionId = useId();
+  const nativeWatchlistStatusId = useId();
+  const traktWatchlistOptionId = useId();
+  const traktWatchlistStatusId = useId();
 
-  const watchlistAvailable = isConnected && watchlistStatus === "ready";
+  const nativeWatchlistAvailable =
+    nativeAuthenticated && nativeWatchlistStatus === "ready";
+  const traktWatchlistAvailable =
+    traktConnected && traktWatchlistStatus === "ready";
   const activeFilterCount = countScreeningFilters(appliedFilters);
   const draftFilterCount = countScreeningFilters(draftFilters);
   const hasPendingChanges = JSON.stringify(draftFilters) !== JSON.stringify(appliedFilters);
-  const canApply = hasPendingChanges && (!draftFilters.watchlistOnly || watchlistAvailable);
+  const canApply =
+    hasPendingChanges &&
+    (!draftFilters.nativeWatchlistOnly || nativeWatchlistAvailable) &&
+    (!draftFilters.traktWatchlistOnly || traktWatchlistAvailable);
 
-  let watchlistStatusMessage = "";
-  let watchlistStatusIsError = false;
-  if (!isConnected) {
-    watchlistStatusMessage = "Connect Trakt to use your movie watchlist.";
-  } else if (watchlistStatus === "loading" || watchlistStatus === "idle") {
-    watchlistStatusMessage = "Loading your Trakt movie watchlist…";
-  } else if (watchlistStatus === "error") {
-    watchlistStatusMessage = watchlistError || "Your Trakt watchlist is currently unavailable.";
-    watchlistStatusIsError = true;
+  let nativeWatchlistStatusMessage = "";
+  let nativeWatchlistStatusIsError = false;
+  if (!nativeAuthenticated) {
+    nativeWatchlistStatusMessage = "Log in to use your London Screenings watchlist.";
+  } else if (
+    nativeWatchlistStatus === "loading" ||
+    nativeWatchlistStatus === "idle"
+  ) {
+    nativeWatchlistStatusMessage = "Loading your London Screenings watchlist…";
+  } else if (nativeWatchlistStatus === "error") {
+    nativeWatchlistStatusMessage =
+      nativeWatchlistError || "Your watchlist is currently unavailable.";
+    nativeWatchlistStatusIsError = true;
   } else {
-    watchlistStatusMessage = `${watchlistCount} movie${watchlistCount === 1 ? "" : "s"} loaded from your watchlist.`;
+    nativeWatchlistStatusMessage = `${nativeWatchlistCount} saved film${
+      nativeWatchlistCount === 1 ? "" : "s"
+    } in your London Screenings watchlist.`;
+  }
+
+  let traktWatchlistStatusMessage = "";
+  let traktWatchlistStatusIsError = false;
+  if (!traktConnected) {
+    traktWatchlistStatusMessage = "Connect Trakt to use your Trakt watchlist.";
+  } else if (
+    traktWatchlistStatus === "loading" ||
+    traktWatchlistStatus === "idle"
+  ) {
+    traktWatchlistStatusMessage = "Loading your Trakt watchlist…";
+  } else if (traktWatchlistStatus === "error") {
+    traktWatchlistStatusMessage =
+      traktWatchlistError || "Your Trakt watchlist is currently unavailable.";
+    traktWatchlistStatusIsError = true;
+  } else {
+    traktWatchlistStatusMessage = `${traktWatchlistCount} film${
+      traktWatchlistCount === 1 ? "" : "s"
+    } loaded from Trakt.`;
   }
 
   useEffect(() => setDraftFilters(appliedFilters), [appliedFilters]);
@@ -110,9 +147,13 @@ export default function FiltersDropdown({
     event.preventDefault();
     handleClose();
   };
-  const handleWatchlistChange = (event) => {
-    if (event.target.checked && !watchlistAvailable) return;
-    updateDraft({ watchlistOnly: event.target.checked });
+  const handleNativeWatchlistChange = (event) => {
+    if (event.target.checked && !nativeWatchlistAvailable) return;
+    updateDraft({ nativeWatchlistOnly: event.target.checked });
+  };
+  const handleTraktWatchlistChange = (event) => {
+    if (event.target.checked && !traktWatchlistAvailable) return;
+    updateDraft({ traktWatchlistOnly: event.target.checked });
   };
   const handleReset = () => setDraftFilters(normaliseScreeningFilters());
   const handleClose = () => {
@@ -161,24 +202,43 @@ export default function FiltersDropdown({
 
           <div className="filters-dropdown-scroll">
             <div className="filters-dropdown-options">
-              <label className={`filters-dropdown-option${watchlistAvailable || draftFilters.watchlistOnly ? "" : " is-disabled"}`} htmlFor={watchlistOptionId}>
+              <label className={`filters-dropdown-option${nativeWatchlistAvailable || draftFilters.nativeWatchlistOnly ? "" : " is-disabled"}`} htmlFor={nativeWatchlistOptionId}>
                 <input
-                  id={watchlistOptionId}
+                  id={nativeWatchlistOptionId}
                   type="checkbox"
-                  checked={draftFilters.watchlistOnly}
-                  disabled={!watchlistAvailable && !draftFilters.watchlistOnly}
-                  aria-describedby={watchlistStatusId}
-                  onChange={handleWatchlistChange}
+                  checked={draftFilters.nativeWatchlistOnly}
+                  disabled={!nativeWatchlistAvailable && !draftFilters.nativeWatchlistOnly}
+                  aria-describedby={nativeWatchlistStatusId}
+                  onChange={handleNativeWatchlistChange}
                 />
                 <span className="filters-dropdown-option-copy">
                   <span className="filters-dropdown-option-title">On my watchlist</span>
-                  <span className="filters-dropdown-option-description">Show films from your Trakt watchlist.</span>
+                  <span className="filters-dropdown-option-description">Show films saved to your London Screenings account.</span>
+                </span>
+              </label>
+
+              <p id={nativeWatchlistStatusId} className={`filters-dropdown-status${nativeWatchlistStatusIsError ? " error" : ""}`} role={nativeWatchlistStatusIsError ? "status" : undefined}>
+                {nativeWatchlistStatusMessage}
+              </p>
+
+              <label className={`filters-dropdown-option${traktWatchlistAvailable || draftFilters.traktWatchlistOnly ? "" : " is-disabled"}`} htmlFor={traktWatchlistOptionId}>
+                <input
+                  id={traktWatchlistOptionId}
+                  type="checkbox"
+                  checked={draftFilters.traktWatchlistOnly}
+                  disabled={!traktWatchlistAvailable && !draftFilters.traktWatchlistOnly}
+                  aria-describedby={traktWatchlistStatusId}
+                  onChange={handleTraktWatchlistChange}
+                />
+                <span className="filters-dropdown-option-copy">
+                  <span className="filters-dropdown-option-title">On my Trakt watchlist</span>
+                  <span className="filters-dropdown-option-description">Show films from the separately connected Trakt account.</span>
                 </span>
               </label>
             </div>
 
-            <p id={watchlistStatusId} className={`filters-dropdown-status${watchlistStatusIsError ? " error" : ""}`} role={watchlistStatusIsError ? "status" : undefined}>
-              {watchlistStatusMessage}
+            <p id={traktWatchlistStatusId} className={`filters-dropdown-status${traktWatchlistStatusIsError ? " error" : ""}`} role={traktWatchlistStatusIsError ? "status" : undefined}>
+              {traktWatchlistStatusMessage}
             </p>
 
             <MultiSelectGroup

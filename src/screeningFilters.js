@@ -31,7 +31,8 @@ export const GENRE_OPTIONS = [
 export const UK_CERTIFICATION_OPTIONS = ["U", "PG", "12", "12A", "15", "18", "R18"];
 
 export const DEFAULT_SCREENING_FILTERS = Object.freeze({
-  watchlistOnly: false,
+  nativeWatchlistOnly: false,
+  traktWatchlistOnly: false,
   genres: Object.freeze([]),
   certifications: Object.freeze([]),
   formats: Object.freeze([]),
@@ -42,7 +43,10 @@ export const DEFAULT_SCREENING_FILTERS = Object.freeze({
 
 export function normaliseScreeningFilters(value = {}) {
   return {
-    watchlistOnly: Boolean(value.watchlistOnly),
+    nativeWatchlistOnly: Boolean(value.nativeWatchlistOnly),
+    traktWatchlistOnly: Boolean(
+      value.traktWatchlistOnly ?? value.watchlistOnly
+    ),
     genres: Array.isArray(value.genres) ? [...new Set(value.genres)] : [],
     certifications: Array.isArray(value.certifications)
       ? [...new Set(value.certifications)]
@@ -62,7 +66,8 @@ export function countScreeningFilters(value) {
   const filters = normaliseScreeningFilters(value);
 
   return (
-    Number(filters.watchlistOnly) +
+    Number(filters.nativeWatchlistOnly) +
+    Number(filters.traktWatchlistOnly) +
     filters.genres.length +
     filters.certifications.length +
     filters.formats.length +

@@ -94,6 +94,15 @@
   line-height: 1.55;
 }
 
+.auth-intro .auth-context-message {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border-radius: 7px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .auth-confirmation p + p {
   margin-top: 12px;
 }

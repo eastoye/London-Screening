@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CinemaMultiSelect from "./CinemaMultiSelect.jsx";
 import DateTimeFilter from "./DateTimeFilter.jsx";
 import DistanceFilter from "./DistanceFilter.jsx";
@@ -6,6 +6,7 @@ import FiltersDropdown from "./FiltersDropdown.jsx";
 import WatchDataModal from "./WatchDataModal.jsx";
 import MovieImportModal from "./MovieImportModal.jsx";
 import AuthModal from "./AuthModal.jsx";
+import NativeWatchlistModal from "./NativeWatchlistModal.jsx";
 import { getAuthErrorMessage } from "./authApi.js";
 import {
   DEFAULT_DATE_TIME_FILTER,
@@ -21,7 +22,14 @@ import { londonDateKey } from "./time.js";
 import { DayGroup } from "./ScreeningRow.jsx";
 import MovieDayGroup from "./MovieDayGroup.jsx";
 import { useAuth } from "./useAuth.js";
+import { useNativeWatchlist } from "./useNativeWatchlist.js";
 import { useTrakt } from "./useTrakt.js";
+import {
+  clearPendingWatchlistAction,
+  loadPendingWatchlistAction,
+  savePendingWatchlistAction,
+  screeningMatchesPersonalFilters,
+} from "./nativeWatchlist.js";
 import {
   DEFAULT_SCREENING_FILTERS,
   countScreeningFilters,
@@ -42,6 +50,13 @@ export default function App() {
   const [authModalOpen, setAuthModalOpen] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountError, setAccountError] = useState("");
+  const [nativeWatchlistNotice, setNativeWatchlistNotice] = useState("");
+  const [nativeWatchlistModalOpen, setNativeWatchlistModalOpen] = useState(false);
+  const [nativeWatchlistInitialQuery, setNativeWatchlistInitialQuery] = useState("");
+  const [pendingWatchlistAction, setPendingWatchlistAction] = useState(() =>
+    loadPendingWatchlistAction()
+  );
+  const pendingWatchlistProcessingRef = useRef(false);
   const [watchDataModalOpen, setWatchDataModalOpen] = useState(false);
   const [movieImportModalOpen, setMovieImportModalOpen] = useState(false);
   const [resultsView, setResultsView] = useState("time");
@@ -65,10 +80,12 @@ export default function App() {
   const [screeningFilters, setScreeningFilters] = useState(() => ({
     ...DEFAULT_SCREENING_FILTERS,
   }));
-  const watchlistOnly = screeningFilters.watchlistOnly;
+  const nativeWatchlistOnly = screeningFilters.nativeWatchlistOnly;
+  const traktWatchlistOnly = screeningFilters.traktWatchlistOnly;
 
   const trakt = useTrakt();
   const auth = useAuth();
+  const nativeWatchlist = useNativeWatchlist(auth.user);
 
   const traktBusy =
     trakt.status === "exchanging" || trakt.status === "fetching";
@@ -145,7 +162,7 @@ export default function App() {
       setMinRating(0);
       setScreeningFilters((current) => ({
         ...current,
-        watchlistOnly: false,
+        traktWatchlistOnly: false,
       }));
       return;
     }
@@ -153,17 +170,83 @@ export default function App() {
     if (trakt.watchlistStatus === "error") {
       setScreeningFilters((current) => ({
         ...current,
-        watchlistOnly: false,
+        traktWatchlistOnly: false,
       }));
     }
   }, [trakt.isConnected, trakt.watchlistStatus]);
 
   useEffect(() => {
+    if (!auth.isAuthenticated || nativeWatchlist.status === "error") {
+      setScreeningFilters((current) => ({
+        ...current,
+        nativeWatchlistOnly: false,
+      }));
+    }
+  }, [auth.isAuthenticated, nativeWatchlist.status]);
+
+  useEffect(() => {
     if (auth.isAuthenticated) {
       setAuthModalOpen(false);
       setAccountError("");
+      return;
     }
+
+    setNativeWatchlistModalOpen(false);
+    setNativeWatchlistInitialQuery("");
   }, [auth.isAuthenticated]);
+
+  useEffect(() => {
+    if (
+      !auth.isAuthenticated ||
+      nativeWatchlist.status !== "ready" ||
+      !pendingWatchlistAction ||
+      pendingWatchlistProcessingRef.current
+    ) {
+      return;
+    }
+
+    if (pendingWatchlistAction.kind === "search") {
+      setNativeWatchlistInitialQuery(pendingWatchlistAction.query);
+      setNativeWatchlistModalOpen(true);
+      clearPendingWatchlistAction();
+      setPendingWatchlistAction(null);
+      return;
+    }
+
+    if (nativeWatchlist.tmdbIds.has(pendingWatchlistAction.tmdbId)) {
+      clearPendingWatchlistAction();
+      setPendingWatchlistAction(null);
+      setNativeWatchlistNotice(
+        `${pendingWatchlistAction.title || "The film"} is already on your watchlist.`
+      );
+      return;
+    }
+
+    pendingWatchlistProcessingRef.current = true;
+    const action = pendingWatchlistAction;
+
+    nativeWatchlist
+      .add(action.tmdbId)
+      .then(() => {
+        clearPendingWatchlistAction();
+        setPendingWatchlistAction(null);
+        setNativeWatchlistNotice(
+          `${action.title || "The film"} was added to your watchlist.`
+        );
+      })
+      .catch(() => {
+        // The watchlist hook exposes a safe error and keeps the pending action.
+      })
+      .finally(() => {
+        pendingWatchlistProcessingRef.current = false;
+      });
+  }, [
+    auth.isAuthenticated,
+    nativeWatchlist.status,
+    nativeWatchlist.tmdbIds,
+    nativeWatchlist.add,
+    pendingWatchlistAction,
+  ]);
 
   const cinemas = useMemo(() => {
     const names = new Set();
@@ -253,7 +336,7 @@ export default function App() {
     setMinRating(0);
     setScreeningFilters((current) => ({
       ...current,
-      watchlistOnly: false,
+      traktWatchlistOnly: false,
     }));
     trakt.disconnect();
   };
@@ -265,10 +348,35 @@ export default function App() {
 
   const clearRecoveryMode = auth.clearRecoveryMode;
 
-  const closeAuthModal = useCallback(() => {
+  const closeAuthModal = useCallback((reason = "cancelled") => {
     setAuthModalOpen(false);
     clearRecoveryMode();
-  }, [clearRecoveryMode]);
+
+    if (reason === "cancelled" && pendingWatchlistAction) {
+      clearPendingWatchlistAction();
+      setPendingWatchlistAction(null);
+    }
+  }, [clearRecoveryMode, pendingWatchlistAction]);
+
+  const requestWatchlistLogin = useCallback(
+    (action) => {
+      const stored = savePendingWatchlistAction(action);
+
+      if (!stored) {
+        setAccountError(
+          "Your selected film could not be preserved. Please log in, then try again."
+        );
+        setAuthModalOpen(true);
+        return;
+      }
+
+      setPendingWatchlistAction(stored);
+      setNativeWatchlistNotice("");
+      setAccountError("");
+      setAuthModalOpen(true);
+    },
+    []
+  );
 
   const handleAccountLogout = useCallback(async () => {
     if (accountBusy) return;
@@ -301,6 +409,64 @@ export default function App() {
     setMovieImportModalOpen(false);
   }, []);
 
+  const openNativeWatchlistModal = useCallback(() => {
+    setNativeWatchlistInitialQuery("");
+    setNativeWatchlistModalOpen(true);
+    setNativeWatchlistNotice("");
+  }, []);
+
+  const closeNativeWatchlistModal = useCallback(() => {
+    setNativeWatchlistModalOpen(false);
+    setNativeWatchlistInitialQuery("");
+  }, []);
+
+  const clearNativeWatchlistInitialQuery = useCallback(() => {
+    setNativeWatchlistInitialQuery("");
+  }, []);
+
+  const handleToggleNativeWatchlist = useCallback(
+    async ({ tmdbId, title, saved }) => {
+      if (!auth.isAuthenticated) {
+        requestWatchlistLogin({ kind: "add", tmdbId, title });
+        return;
+      }
+
+      setNativeWatchlistNotice("");
+
+      try {
+        if (saved) {
+          await nativeWatchlist.remove(tmdbId);
+          setNativeWatchlistNotice(`${title} was removed from your watchlist.`);
+        } else {
+          await nativeWatchlist.add(tmdbId);
+          setNativeWatchlistNotice(`${title} was added to your watchlist.`);
+        }
+      } catch {
+        // The watchlist hook exposes a safe error in the page and modal.
+      }
+    },
+    [
+      auth.isAuthenticated,
+      nativeWatchlist.add,
+      nativeWatchlist.remove,
+      requestWatchlistLogin,
+    ]
+  );
+
+  const handleFindNativeWatchlistMovie = useCallback(
+    (title) => {
+      if (!auth.isAuthenticated) {
+        requestWatchlistLogin({ kind: "search", query: title });
+        return;
+      }
+
+      setNativeWatchlistInitialQuery(title);
+      setNativeWatchlistModalOpen(true);
+      setNativeWatchlistNotice("");
+    },
+    [auth.isAuthenticated, requestWatchlistLogin]
+  );
+
   const connectTrakt = trakt.connect;
 
   const handleConnectTrakt = useCallback(() => {
@@ -317,7 +483,7 @@ export default function App() {
     return ratings;
   }, [trakt.ratings]);
 
-  const watchlistTmdbIdSet = useMemo(
+  const traktWatchlistTmdbIdSet = useMemo(
     () => new Set(trakt.watchlistTmdbIds),
     [trakt.watchlistTmdbIds]
   );
@@ -360,27 +526,17 @@ export default function App() {
         return false;
       }
 
-      const ratingFilterActive = minRating > 0;
-      const traktFilterActive = ratingFilterActive || watchlistOnly;
-
-      if (traktFilterActive) {
-        const tmdbId = Number(screening.movies?.tmdb_id);
-
-        if (!Number.isInteger(tmdbId) || tmdbId <= 0) {
-          return false;
-        }
-
-        const userRating = ratingsByTmdbId.get(tmdbId);
-        const matchesRating =
-          ratingFilterActive &&
-          userRating !== undefined &&
-          userRating >= minRating;
-        const matchesWatchlist =
-          watchlistOnly && watchlistTmdbIdSet.has(tmdbId);
-
-        if (!matchesRating && !matchesWatchlist) {
-          return false;
-        }
+      if (
+        !screeningMatchesPersonalFilters(screening, {
+          minRating,
+          ratingsByTmdbId,
+          nativeWatchlistOnly,
+          nativeWatchlistTmdbIds: nativeWatchlist.tmdbIds,
+          traktWatchlistOnly,
+          traktWatchlistTmdbIds: traktWatchlistTmdbIdSet,
+        })
+      ) {
+        return false;
       }
 
       return true;
@@ -396,8 +552,10 @@ export default function App() {
     screeningFilters,
     minRating,
     ratingsByTmdbId,
-    watchlistOnly,
-    watchlistTmdbIdSet,
+    nativeWatchlistOnly,
+    nativeWatchlist.tmdbIds,
+    traktWatchlistOnly,
+    traktWatchlistTmdbIdSet,
   ]);
 
   const groups = useMemo(() => {
@@ -446,6 +604,15 @@ export default function App() {
 
   let emptyMessage = "No upcoming screenings match your current filters.";
 
+  let authContextMessage = "";
+  if (pendingWatchlistAction?.kind === "add") {
+    authContextMessage = `Log in to save ${
+      pendingWatchlistAction.title || "this film"
+    } to your watchlist.`;
+  } else if (pendingWatchlistAction?.kind === "search") {
+    authContextMessage = `Log in to find and save the exact version of ${pendingWatchlistAction.query}.`;
+  }
+
   if (noCinemasSelected) {
     emptyMessage =
       "No cinemas are selected. Select at least one cinema to see screenings.";
@@ -484,6 +651,16 @@ export default function App() {
                   <span className="account-email" title={auth.user.email}>
                     {auth.user.email}
                   </span>
+                  <button
+                    className="text-button"
+                    type="button"
+                    onClick={openNativeWatchlistModal}
+                  >
+                    Watchlist
+                    {nativeWatchlist.status === "ready"
+                      ? ` (${nativeWatchlist.items.length})`
+                      : ""}
+                  </button>
                   <button
                     className="text-button"
                     type="button"
@@ -554,6 +731,34 @@ export default function App() {
         {(accountError || auth.initializationError) && (
           <div className="account-message error" role="alert">
             <span>{accountError || auth.initializationError}</span>
+          </div>
+        )}
+
+        {nativeWatchlist.error && (
+          <div className="account-message error" role="alert">
+            <span>{nativeWatchlist.error}</span>
+            {auth.isAuthenticated && (
+              <button
+                className="text-button"
+                type="button"
+                onClick={() => void nativeWatchlist.refresh().catch(() => {})}
+              >
+                Try again
+              </button>
+            )}
+          </div>
+        )}
+
+        {nativeWatchlistNotice && (
+          <div className="account-message success" role="status">
+            <span>{nativeWatchlistNotice}</span>
+            <button
+              className="text-button"
+              type="button"
+              onClick={() => setNativeWatchlistNotice("")}
+            >
+              Dismiss
+            </button>
           </div>
         )}
 
@@ -656,10 +861,14 @@ export default function App() {
         <FiltersDropdown
           value={screeningFilters}
           onApply={setScreeningFilters}
-          isConnected={trakt.isConnected}
-          watchlistStatus={trakt.watchlistStatus}
-          watchlistError={trakt.watchlistError}
-          watchlistCount={trakt.watchlistTmdbIds.length}
+          nativeAuthenticated={auth.isAuthenticated}
+          nativeWatchlistStatus={nativeWatchlist.status}
+          nativeWatchlistError={nativeWatchlist.error}
+          nativeWatchlistCount={nativeWatchlist.items.length}
+          traktConnected={trakt.isConnected}
+          traktWatchlistStatus={trakt.watchlistStatus}
+          traktWatchlistError={trakt.watchlistError}
+          traktWatchlistCount={trakt.watchlistTmdbIds.length}
           disabled={status !== "ready"}
         />
 
@@ -724,6 +933,11 @@ export default function App() {
                 dateKey={key}
                 screenings={rows}
                 ratingsByTmdbId={ratingsByTmdbId}
+                nativeWatchlistTmdbIds={nativeWatchlist.tmdbIds}
+                savingTmdbIds={nativeWatchlist.savingTmdbIds}
+                removingTmdbIds={nativeWatchlist.removingTmdbIds}
+                onToggleWatchlist={handleToggleNativeWatchlist}
+                onFindMovie={handleFindNativeWatchlistMovie}
               />
             )
           ))}
@@ -756,6 +970,24 @@ export default function App() {
         onResetPassword={auth.resetPassword}
         onUpdatePassword={auth.updateUserPassword}
         recoveryMode={auth.recoveryMode}
+        contextMessage={authContextMessage}
+      />
+
+      <NativeWatchlistModal
+        isOpen={nativeWatchlistModalOpen}
+        onClose={closeNativeWatchlistModal}
+        items={nativeWatchlist.items}
+        status={nativeWatchlist.status}
+        error={nativeWatchlist.error}
+        onClearError={nativeWatchlist.clearError}
+        onSearch={nativeWatchlist.search}
+        onAdd={nativeWatchlist.add}
+        onRemove={nativeWatchlist.remove}
+        savingTmdbIds={nativeWatchlist.savingTmdbIds}
+        removingTmdbIds={nativeWatchlist.removingTmdbIds}
+        screenings={screenings}
+        initialQuery={nativeWatchlistInitialQuery}
+        onInitialQueryConsumed={clearNativeWatchlistInitialQuery}
       />
 
       <WatchDataModal

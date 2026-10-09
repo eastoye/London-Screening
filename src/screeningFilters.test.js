@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { screeningMatchesMetadataFilters } from "./screeningFilters.js";
+import {
+  countScreeningFilters,
+  normaliseScreeningFilters,
+  screeningMatchesMetadataFilters,
+} from "./screeningFilters.js";
 
 function screening(overrides = {}) {
   return {
@@ -59,4 +63,22 @@ test("programme type filters match structured programme metadata", () => {
     ),
     true
   );
+});
+
+test("native and Trakt watchlist filters are separate staged filters", () => {
+  const filters = normaliseScreeningFilters({
+    nativeWatchlistOnly: true,
+    traktWatchlistOnly: true,
+  });
+
+  assert.equal(filters.nativeWatchlistOnly, true);
+  assert.equal(filters.traktWatchlistOnly, true);
+  assert.equal(countScreeningFilters(filters), 2);
+});
+
+test("the previous Trakt watchlist field is normalised for compatibility", () => {
+  const filters = normaliseScreeningFilters({ watchlistOnly: true });
+
+  assert.equal(filters.nativeWatchlistOnly, false);
+  assert.equal(filters.traktWatchlistOnly, true);
 });
