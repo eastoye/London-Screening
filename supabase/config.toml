@@ -6,3 +6,12 @@ verify_jwt = false
 
 [functions.enrich-movie-metadata]
 verify_jwt = true
+
+[functions.native-watchlist-movies]
+verify_jwt = true
+
+[functions.screening-alerts]
+verify_jwt = true
+
+[functions.process-screening-alerts]
+verify_jwt = false
