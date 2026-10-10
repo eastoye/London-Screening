@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex,nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; connect-src https://czsknzrtumbdweusfyhk.supabase.co; style-src 'unsafe-inline'; form-action 'none'; base-uri 'none'; frame-src 'none'; object-src 'none'">
+  <title>Screening Alerts — Stage 1 acceptance</title>
+  <style>
+    :root{color-scheme:dark;font:16px/1.5 system-ui,sans-serif;background:#121725;color:#e9edf5}
+    body{max-width:760px;margin:32px auto;padding:0 20px}h1{font-size:1.6rem}h2{font-size:1.1rem}
+    .notice,fieldset{background:#1b2334;border:1px solid #39465d;border-radius:10px;padding:18px;margin:18px 0}
+    fieldset{min-width:0}label{display:block;margin-top:12px}input{box-sizing:border-box;width:100%;padding:10px;color:inherit;background:#111927;border:1px solid #62718a;border-radius:5px}
+    button{padding:10px 16px;background:#c8d7ff;color:#111927;border:0;border-radius:5px;font-weight:650;margin-top:15px;cursor:pointer}
+    button:disabled{opacity:.5;cursor:default}button.secondary{background:#35445f;color:#fff;margin-left:8px}
+    #results{padding-left:24px}#results li{margin:6px 0}.success{color:#9ce5b5}.failure{color:#ffafa8}p{margin:10px 0}
+  </style>
+</head>
+<body>
+  <h1>Screening Alerts — Stage 1 acceptance</h1>
+  <div class="notice">
+    <strong>Email delivery stays disabled.</strong>
+    <p>This temporary developer test checks two signed-in accounts. It follows Alien (1979) for account A and Fight Club (1999) for account B, checks isolation and removes those test follows.</p>
+    <p>Use accounts with no existing alert preferences or follows. Native watchlists remain unchanged. Passwords and sessions are kept only in this page's memory.</p>
+  </div>
+  <p id="configuration-status" role="status">Checking configuration…</p>
+  <form id="account-a" autocomplete="off">
+    <fieldset><legend>Account A</legend>
+      <label for="a-email">Account A email</label><input id="a-email" name="email" type="email" autocomplete="username" required>
+      <label for="a-password">Account A password</label><input id="a-password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit" disabled>Connect account A</button><p id="a-status" role="status">Not connected</p>
+    </fieldset>
+  </form>
+  <form id="account-b" autocomplete="off">
+    <fieldset><legend>Account B</legend>
+      <label for="b-email">Account B email</label><input id="b-email" name="email" type="email" autocomplete="username" required>
+      <label for="b-password">Account B password</label><input id="b-password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit" disabled>Connect account B</button><p id="b-status" role="status">Not connected</p>
+    </fieldset>
+  </form>
+  <button id="run" type="button" disabled>Run acceptance tests</button>
+  <button id="disconnect" type="button" class="secondary" disabled>Disconnect test sessions</button>
+  <p id="run-status" role="status">Connect two different accounts to begin.</p>
+  <ol id="results"></ol>
+  <script type="module" src="./screening-alerts-acceptance.mjs"></script>
+</body>
+</html>
