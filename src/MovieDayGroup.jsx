@@ -5,6 +5,7 @@ import { groupScreeningsByMovie } from "./movieGrouping.js";
 import { getScreeningDisplayChips } from "./screeningPresentation.js";
 import { formatRuntime, resolveMovieDetails } from "./movieDetails.js";
 import { getMovieTrailerUrl } from "./movieTrailer.js";
+import { confirmedMovieTmdbId } from "./nativeWatchlist.js";
 
 function ExpandIcon({ expanded }) {
   return (
@@ -39,6 +40,24 @@ function BookIcon() {
       aria-hidden="true"
     >
       <polyline points="9 18 15 12 9 6" />
+    </svg>
+  );
+}
+
+function BookmarkIcon({ saved = false }) {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill={saved ? "currentColor" : "none"}
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M6 3h12v18l-6-4-6 4V3z" />
     </svg>
   );
 }
@@ -157,10 +176,27 @@ function MovieDetailSummary({ details, trailerUrl }) {
   );
 }
 
-function MovieGroup({ group, ratingsByTmdbId }) {
+function MovieGroup({
+  group,
+  ratingsByTmdbId,
+  nativeWatchlistTmdbIds,
+  savingTmdbIds,
+  removingTmdbIds,
+  onToggleWatchlist,
+  onFindMovie,
+}) {
   const [expanded, setExpanded] = useState(false);
   const regionId = useId();
   const tmdbId = Number(group.movie?.tmdb_id);
+  const confirmedTmdbId = confirmedMovieTmdbId(group.movie);
+  const saved = Boolean(
+    confirmedTmdbId && nativeWatchlistTmdbIds?.has(confirmedTmdbId)
+  );
+  const watchlistBusy = Boolean(
+    confirmedTmdbId &&
+      (savingTmdbIds?.has(confirmedTmdbId) ||
+        removingTmdbIds?.has(confirmedTmdbId))
+  );
   const userRating =
     Number.isInteger(tmdbId) && tmdbId > 0
       ? ratingsByTmdbId?.get(tmdbId)
@@ -185,42 +221,84 @@ function MovieGroup({ group, ratingsByTmdbId }) {
 
   return (
     <div className="movie-group">
-      <button
-        className="movie-summary"
-        type="button"
-        aria-expanded={expanded}
-        aria-controls={regionId}
-        onClick={() => setExpanded((current) => !current)}
-      >
-        <ScreeningPoster
-          movie={group.movie}
-          verifiedArtworkUrl={verifiedArtworkUrl}
-          peerVerifiedArtworkUrls={peerVerifiedArtworkUrls}
-          className="movie-summary-poster"
-        />
+      <div className="movie-summary-shell">
+        <button
+          className="movie-summary"
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={regionId}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <ScreeningPoster
+            movie={group.movie}
+            verifiedArtworkUrl={verifiedArtworkUrl}
+            peerVerifiedArtworkUrls={peerVerifiedArtworkUrls}
+            className="movie-summary-poster"
+          />
 
-        <span className="movie-summary-body">
-          <span className="movie-summary-title">{group.title}</span>
+          <span className="movie-summary-body">
+            <span className="movie-summary-title">{group.title}</span>
 
-          <span className="movie-summary-meta">
-            {Number.isInteger(userRating) && (
-              <span className="rating-badge" title="Your Trakt rating">
-                ★ {userRating}/10
+            <span className="movie-summary-meta">
+              {Number.isInteger(userRating) && (
+                <span className="rating-badge" title="Your Trakt rating">
+                  ★ {userRating}/10
+                </span>
+              )}
+
+              <span>
+                {screeningCount} screening{screeningCount === 1 ? "" : "s"}
               </span>
-            )}
-
-            <span>
-              {screeningCount} screening{screeningCount === 1 ? "" : "s"}
-            </span>
-            <span aria-hidden="true">·</span>
-            <span>
-              {group.cinemaCount} cinema{group.cinemaCount === 1 ? "" : "s"}
+              <span aria-hidden="true">·</span>
+              <span>
+                {group.cinemaCount} cinema{group.cinemaCount === 1 ? "" : "s"}
+              </span>
             </span>
           </span>
-        </span>
 
-        <ExpandIcon expanded={expanded} />
-      </button>
+          <ExpandIcon expanded={expanded} />
+        </button>
+
+        <button
+          className={`movie-watchlist-button${saved ? " is-saved" : ""}`}
+          type="button"
+          disabled={watchlistBusy}
+          onClick={() =>
+            confirmedTmdbId
+              ? onToggleWatchlist({
+                  tmdbId: confirmedTmdbId,
+                  title: group.title,
+                  saved,
+                })
+              : onFindMovie(group.title)
+          }
+          aria-label={
+            confirmedTmdbId
+              ? saved
+                ? `Remove ${group.title} from your watchlist`
+                : `Save ${group.title} to your watchlist`
+              : `Find and save the correct version of ${group.title}`
+          }
+          title={
+            confirmedTmdbId
+              ? saved
+                ? "Remove from watchlist"
+                : "Save to watchlist"
+              : "Find the exact film before saving"
+          }
+        >
+          <BookmarkIcon saved={saved} />
+          <span>
+            {watchlistBusy
+              ? "Working…"
+              : confirmedTmdbId
+                ? saved
+                  ? "Saved"
+                  : "Save"
+                : "Find"}
+          </span>
+        </button>
+      </div>
 
       {expanded && (
         <div className="movie-expanded" id={regionId}>
@@ -244,6 +322,11 @@ export default function MovieDayGroup({
   dateKey,
   screenings,
   ratingsByTmdbId,
+  nativeWatchlistTmdbIds,
+  savingTmdbIds,
+  removingTmdbIds,
+  onToggleWatchlist,
+  onFindMovie,
 }) {
   const groups = useMemo(
     () => groupScreeningsByMovie(screenings),
@@ -261,6 +344,11 @@ export default function MovieDayGroup({
           key={group.key}
           group={group}
           ratingsByTmdbId={ratingsByTmdbId}
+          nativeWatchlistTmdbIds={nativeWatchlistTmdbIds}
+          savingTmdbIds={savingTmdbIds}
+          removingTmdbIds={removingTmdbIds}
+          onToggleWatchlist={onToggleWatchlist}
+          onFindMovie={onFindMovie}
         />
       ))}
     </section>

@@ -33,6 +33,7 @@ export default function AuthModal({
   onResetPassword,
   onUpdatePassword,
   recoveryMode = false,
+  contextMessage = "",
 }) {
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
@@ -82,7 +83,7 @@ export default function AuthModal({
     const handleKeyDown = (event) => {
       if (event.key === "Escape" && !submittingRef.current) {
         event.preventDefault();
-        onClose();
+        onClose("cancelled");
         return;
       }
 
@@ -118,7 +119,7 @@ export default function AuthModal({
 
   useEffect(() => {
     if (isOpen && isAuthenticated && !recoveryMode) {
-      onClose();
+      onClose("authenticated");
     }
   }, [isAuthenticated, isOpen, onClose, recoveryMode]);
 
@@ -132,7 +133,7 @@ export default function AuthModal({
 
   const close = () => {
     if (!submittingRef.current) {
-      onClose();
+      onClose("cancelled");
     }
   };
 
@@ -218,7 +219,7 @@ export default function AuthModal({
 
     try {
       await onUpdatePassword(password);
-      onClose();
+      onClose("completed");
     } catch (updateError) {
       setError(getAuthErrorMessage(updateError, "updatePassword"));
     } finally {
@@ -262,7 +263,7 @@ export default function AuthModal({
         await onSignIn(email, password);
       }
 
-      onClose();
+      onClose("authenticated");
     } catch (submitError) {
       setError(
         getAuthErrorMessage(
@@ -532,6 +533,9 @@ export default function AuthModal({
                     ? "Create an account with your email and password."
                     : "Use your London Screenings email and password."}
                 </p>
+                {contextMessage && (
+                  <p className="auth-context-message">{contextMessage}</p>
+                )}
               </div>
 
               <div className="auth-mode-switch" aria-label="Account action">
