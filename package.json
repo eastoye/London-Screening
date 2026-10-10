@@ -1,13 +1,22 @@
 {
-  "name": "london-screenings-alerts-stage1-validation",
+  "name": "cinema-listings",
   "private": true,
+  "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "test": "node --test tests/*.test.mjs"
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test src/movieImport/*.test.js src/*.test.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "fflate": "^0.8.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "0.5.8",
-    "esbuild": "0.25.12",
-    "typescript": "5.9.3"
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.11"
   }
 }

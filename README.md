@@ -1,54 +1,106 @@
-# London Screenings — Screening Alerts Stage 1
+# London Screenings
 
-Prepared 9 October 2026 for **London Screenings — App Development**. This is a manual-install development package, not a deployed feature. It contains complete database and Edge Function files, isolated validation tools and installation instructions.
+[![Open in Bolt](https://bolt.new/static/open-in-bolt.svg)](https://bolt.new/~/sb1-pdp6gh31)
 
-Stage 1 supports independently followed TMDB films, secure account-scoped preview requests, a durable performance ledger, conservative detection and one London morning preview per account/date. **No email transport exists. Database constraints prohibit enabling sending or granting email permission.** No repository branch, commit, migration, deployment, secret change, schedule or email send has been performed.
+React/Vite application with Supabase Auth, screening data and Edge Functions.
 
-Start with [manual-install/INSTALL.md](manual-install/INSTALL.md), then consult [MANIFEST.md](manual-install/MANIFEST.md) for the exact files to copy. Do not overlay this whole directory on the application repository: its root package files are an isolated test harness.
+## Application development
 
-The inspected application is `eastoye/London-Screening`, main commit `0cdddd24583d761b9c109913d2bbfdab864bc239`. **The live frontend's Supabase project was confirmed on 10 October 2026 as `czsknzrtumbdweusfyhk`.** Its deployed client and native-watchlist adapter use that project, which still lacks the native-watchlist table/function. See [LIVE-BACKEND-VERIFICATION.md](manual-install/LIVE-BACKEND-VERIFICATION.md). This package does not repair that separate deployment discrepancy; Stage 1 is also not installed.
-
-## Validation
-
-Run in this extracted package, separately from the application's dependencies:
+The root `package.json` and `package-lock.json` belong to this application.
+They include React, React DOM, Supabase, fflate, Vite and the React Vite plugin.
 
 ```sh
-npm ci --ignore-scripts
+npm ci
 npm test
-npm run check
-npm run build:functions
+npm run build
 ```
 
-See [TEST-RESULTS.md](manual-install/TEST-RESULTS.md) for the actual local results and the remaining staging checks. The tests use PostgreSQL through PGlite and mocked HTTP services; they do not modify Supabase or contact TMDB/Resend.
+The application test command includes `src/movieImport/*.test.js` and
+`src/*.test.js`. Keep those tests. Run the separate Screening Alerts validation
+package outside the application; never copy its dependency files over these files.
 
-## Operational limits and semantics
+Frontend deployment uses `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY`.
+Only the public client key belongs in frontend configuration. Service-role,
+TMDB and worker credentials belong in Supabase server secrets.
 
-| Concern | Stage 1 behavior |
-| --- | --- |
-| Film identity | Positive confirmed `movies.tmdb_id`, `match_status = 'matched'`; no candidate/title matching |
-| Subscription boundary | Server time after account/detector locks; remove/refollow and pause/resume establish new generations |
-| Existing screenings | Baseline, including unmatched/inactive rows and older rows discovered later |
-| Source evidence | Latest mapped import must be completed successfully within 36 hours; row must have been seen inside that run |
-| Identity policy | Explicit venue mapping and approved source ID forms; ICA and David Lean disabled |
-| Temporary holds | Failed/running/stale imports, missing/inactive rows and unconfirmed film identity remain reconsiderable |
-| Final decisions | Baseline, trusted sold-out/expired performances, cancelled recipient items; identity conflicts quarantined |
-| Deduplication | Durable source key and unique account/source item; previews never erase those keys |
-| Collection | 08:00 inclusive to 12:00 exclusive in `Europe/London`; at most one preview per account/local date |
-| Overflow | Later new/overflow performances remain pending for a subsequent morning, subject to fresh eligibility checks |
-| Follow limit | 200 active films per account, configurable in the private control table (1–1,000) |
-| User API quota | 30 requests/account/minute and 1,000 total/minute; includes read/search/follow/remove/pause/resume |
-| Detection | Default 500, maximum 1,000 newly collected references and evaluated performances per call; oldest-evaluated first |
-| Preview limits | At most 50 accounts/call and 200 performances/preview; this bounds output, not every query's total work |
-| Retention | Last 100 run reports and roughly seven days of preview content; durable ledger/items retained for deduplication |
-| Account deletion | Cascades personal subscriptions, preferences, recipient items and previews |
-| Scheduling | Manual invocations only in this package; no cron installation |
+## Authentication
 
-The 36-hour policy intentionally holds previously valid screenings after a failed or running latest fetch. `unknown` availability can qualify and is reported honestly; it is not a promise of tickets. A trusted sold-out first exclusion remains final even if availability later changes.
+London Screenings uses Supabase email/password authentication:
+sign up, log in, local log out and password recovery. Local log out preserves
+the independent Trakt connection. A password-recovery link redirects to the
+application's new-password form.
 
-Source evidence is read in one statement for each evaluation and rechecked in one statement before a preview is created. Existing importers remain multi-batch operations. These checks reduce partial-import exposure; they do not make an importer transactional. Preview content is diagnostic, not a frozen provider delivery payload.
+## Native watchlists
 
-## Stage 2 boundary
+Native watchlists use `public.user_watchlist` and
+`supabase/functions/native-watchlist-movies/index.ts`.
+The function independently verifies the signed-in user and fetches film
+metadata from TMDB before writing. Owners can read and remove their saved
+films; browser clients cannot insert or update metadata directly.
+Film identity is the exact TMDB ID. Trakt remains independent.
 
-Existing Stage 1 follows are preview requests, **not permission to email**. Stage 2 must add explicit permission plus alert-specific mailbox verification bound to the current Auth email, and establish a new activation time/generation. Cancel Stage 1 pending items at that transition; never promote a preview or historical preview item into an email delivery.
+## Screening Alerts Stage 1
 
-Stage 2 also needs immutable attempted payloads, delivery leases/recovery, Resend idempotency and delivery-ID tags, authenticated idempotent webhooks, consent/address rechecks, provider suppression, token-authorised unsubscribe and capacity accounting. Stage 3 adds frontend controls and the live pilot. Neither stage is included here.
+Users explicitly follow films independently of their watchlist.
+Stage 1 provides subscriptions, conservative detection and morning dry-run
+previews. Database constraints keep email permission and sending disabled.
+There is no Resend transport. Email delivery is Stage 2; frontend alert
+controls and the pilot are Stage 3.
+
+Installed source locations:
+
+- `supabase/config.toml`: actual function configuration.
+- `supabase/functions/screening-alerts/index.ts`: authenticated user API.
+- `supabase/functions/process-screening-alerts/index.ts`: secret-protected worker.
+- `supabase/functions/_shared/screeningAlertsStage1.ts`: shared handler.
+- `supabase/migrations/`: database migration source records.
+- `supabase/manual-install/`: reference/manual SQL scripts, including
+  `verify_user_watchlist.sql` for read-only watchlist checks.
+
+The request and detector manual SQL files duplicate the installed migration
+definitions. Do not execute them again on an installed project.
+
+### Verified installation on 10 October 2026
+
+The observed live frontend uses Supabase project `czsknzrtumbdweusfyhk`.
+Watchlist storage and its Edge Function are installed. Both alerts Edge
+Functions and all Stage 1 database routines are installed. Deployed watchlist
+and alerts source matches GitHub commit
+`2868a86d8f56ff10dd7171e45f0d671d4adb4edb`.
+
+Installed feature migrations:
+
+- `20261010083226_create_user_watchlist`
+- `20261010085305_screening_alerts_stage1_schema`
+- `20261010095408_screening_alerts_stage1_requests`
+- `20261010095434_screening_alerts_stage1_detector`
+
+The alert baseline was seeded once at
+`2026-10-10T10:23:34.985941Z`, covering 18,360 existing screenings.
+Two committed dry runs produced zero historical alert items, previews or
+emails. Never reset or reseed that baseline.
+
+The 38-venue mapping includes Electric Cinemas and Olympic Cinemas grouped
+ownership. ICA and David Lean remain excluded for unstable performance
+identities. Matching remains exact and confirmed.
+
+### Remaining integration and acceptance
+
+The alerts API's origin preflight and worker returned HTTP 503
+`not_configured` during verification. In Supabase Edge Function secrets, set:
+
+- `SCREENING_ALERTS_APP_URL=https://london-screenings-tq8c.bolt.host`
+- `SCREENING_ALERTS_WORKER_SECRET`: a fresh private random secret, 32–512 characters.
+
+Confirm the existing server `TMDB_READ_ACCESS_TOKEN`. Supabase supplies
+`SUPABASE_URL`, `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY`.
+Never put private credentials in GitHub, chat or frontend environment variables.
+
+Complete signed-in watchlist search/save/duplicate/remove testing, valid-session
+alerts requests, an authorised worker HTTP call, two-account JWT isolation and
+concurrency checks before closing Stage 1 acceptance. Database role/claim
+isolation tests passed with fixtures rolled back; those tests do not replace
+real Auth sessions or concurrent sessions.
+
+Keep delivery disabled. No alerts cron job was added.
+Importer failures and TMDB coverage improvements are separate tasks.
