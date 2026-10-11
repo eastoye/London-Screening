@@ -120,6 +120,7 @@ function SearchCandidate({ candidate, saved, saving, onAdd }) {
 export default function NativeWatchlistModal({
   isOpen,
   onClose,
+  onImport,
   items,
   status,
   error,
@@ -300,6 +301,10 @@ export default function NativeWatchlistModal({
           >
             <CloseIcon />
           </button>
+        </div>
+
+        <div className="native-watchlist-import-action">
+          <button type="button" className="native-watchlist-add" onClick={onImport}>Import watchlist</button>
         </div>
 
         <div className="native-watchlist-tabs" role="tablist">

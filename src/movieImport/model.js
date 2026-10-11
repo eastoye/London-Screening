@@ -82,6 +82,9 @@ export function createImportRecord(input) {
     source: input.source || IMPORT_SOURCE.TEXT,
     sourceRefs: [String(input.sourceRef || "").trim()].filter(Boolean),
     raw: String(input.raw || ""),
+    identityInvalidReason: !title && !tmdbId && !traktId && !imdbId ? "A title or stable movie ID is required." : null,
+    ratingInvalidReason: input.rating !== null && input.rating !== undefined && input.rating !== "" && rating === null
+      ? "The rating is outside its stated scale." : null,
     invalidReason:
       !title && !tmdbId && !traktId && !imdbId
         ? "A title or stable movie ID is required."
@@ -125,6 +128,8 @@ function mergeRecord(target, incoming) {
     sourceRefs: Array.from(new Set([...target.sourceRefs, ...incoming.sourceRefs])),
     duplicateCount: (target.duplicateCount || 1) + (incoming.duplicateCount || 1),
     ratingConflict: target.ratingConflict || incoming.ratingConflict || ratingConflict,
+    identityInvalidReason: target.identityInvalidReason || incoming.identityInvalidReason,
+    ratingInvalidReason: target.ratingInvalidReason || incoming.ratingInvalidReason,
     invalidReason:
       target.invalidReason ||
       incoming.invalidReason ||

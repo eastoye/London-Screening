@@ -23,6 +23,10 @@ function queryBuilder(result, calls) {
       calls.push(["order", column, options]);
       return builder;
     },
+    range(start, end) {
+      calls.push(["range", start, end]);
+      return builder;
+    },
     then(resolve, reject) {
       return Promise.resolve(result).then(resolve, reject);
     },
@@ -179,4 +183,46 @@ test("function failures expose only the server's user-facing error", async () =>
       error.message === "Your login has expired. Log in again." &&
       !error.message.includes("transport")
   );
+});
+
+test("batch import binds its Authorization header to the expected current user", async () => {
+  const calls = [];
+  const mock = client({ invoke: async (name, options) => { calls.push(options); return { data: { userId: "user-a", results: [] } }; } });
+  mock.value.auth = { getSession: async () => ({ data: { session: { user: { id: "user-a" }, access_token: "token-a" } } }) };
+  await createNativeWatchlistApi(mock.value).importBatch("user-a", [348]);
+  assert.deepEqual(calls, [{ headers: { Authorization: "Bearer token-a" }, body: { action: "import", tmdbIds: [348] } }]);
+});
+test("account switching prevents a batch request from being sent under the new session", async () => {
+  let calls = 0;
+  const mock = client({ invoke: async () => { calls++; } });
+  mock.value.auth = { getSession: async () => ({ data: { session: { user: { id: "user-b" }, access_token: "token-b" } } }) };
+  await assert.rejects(createNativeWatchlistApi(mock.value).importBatch("user-a", [348]), (e) => e.code === "account_changed");
+  assert.equal(calls, 0);
+});
+test("missing sessions and unauthorised responses stop the import", async () => {
+  const mock = client(); mock.value.auth = { getSession: async () => ({ data: { session: null } }) };
+  await assert.rejects(createNativeWatchlistApi(mock.value).importBatch("user-a", [348]), (e) => e.code === "authentication_required");
+});
+test("rejects an import response attributed to a different account", async () => {
+  const mock = client({ invoke: async () => ({ data: { userId: "user-b", results: [] } }) });
+  mock.value.auth = { getSession: async () => ({ data: { session: { user: { id: "user-a" }, access_token: "token-a" } } }) };
+  await assert.rejects(createNativeWatchlistApi(mock.value).importBatch("user-a", [348]), (e) => e.code === "invalid_response");
+});
+
+
+test("loads all watchlist pages beyond the Supabase per-request limit", async () => {
+  let page = 0;
+  const rows = Array.from({ length: 1201 }, (_, i) => ({ tmdb_id: i + 1, display_title: `Film ${i + 1}` }));
+  const ranges = [];
+  const value = {
+    functions: { invoke() {} },
+    from() {
+      const builder = { select() { return builder; }, eq() { return builder; }, order() { return builder; },
+        range(start, end) { ranges.push([start, end]); return Promise.resolve({ data: rows.slice(start, end + 1) }); } };
+      page++; return builder;
+    },
+  };
+  const result = await createNativeWatchlistApi(value).list("user-a");
+  assert.equal(result.length, 1201); assert.equal(page, 3);
+  assert.deepEqual(ranges, [[0, 499], [500, 999], [1000, 1499]]);
 });

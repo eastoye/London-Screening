@@ -1,4 +1,5 @@
 import { unzipSync, strFromU8 } from "fflate";
+import { parseTextInput } from "./textParser.js";
 import { parseCsvInput } from "./csvParser.js";
 import { IMPORT_SOURCE } from "./model.js";
 
@@ -12,7 +13,15 @@ function ensureFileSize(file) {
 }
 
 function parseLetterboxdZip(buffer, filename) {
-  const files = unzipSync(new Uint8Array(buffer));
+  let expandedBytes = 0;
+  const files = unzipSync(new Uint8Array(buffer), {
+    filter(entry) {
+      if (!/(^|\/)(watchlist|ratings)\.csv$/i.test(entry.name)) return false;
+      expandedBytes += entry.originalSize;
+      if (expandedBytes > MAX_UNCOMPRESSED_BYTES) throw new Error("The uncompressed Letterboxd export is too large.");
+      return true;
+    },
+  });
   const supported = Object.entries(files).filter(([name]) =>
     /(^|\/)(watchlist|ratings)\.csv$/i.test(name)
   );
@@ -45,5 +54,6 @@ export async function parseImportFile(file) {
     throw new Error("Upload a CSV, TSV, text file, or Letterboxd ZIP export.");
   }
 
+  if (/\.txt$/i.test(filename)) return parseTextInput(await file.text());
   return parseCsvInput(await file.text(), { filename });
 }

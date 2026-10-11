@@ -101,7 +101,7 @@ export function parseCsvInput(value, options = {}) {
       year: firstValue(data, ["year", "release year"]),
       rating: ratingValue,
       ratingScale: isLetterboxd ? 5 : 10,
-      watchlist: !ratingValue,
+      watchlist: /(?:^|[\/:_-])watchlist(?:\.|[_-])/i.test(options.filename || "") || !ratingValue,
       imdbId: normaliseImdbId(imdbValue),
       tmdbId: positiveInteger(firstValue(data, ["tmdb id", "tmdb"])),
       traktId: positiveInteger(firstValue(data, ["trakt id", "trakt"])),

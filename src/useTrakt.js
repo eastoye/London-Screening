@@ -12,6 +12,7 @@ import {
   syncTraktImport,
 } from "./traktApi.js";
 
+const CONNECTION_KEY = "london_screenings_trakt_connection";
 const OAUTH_STATE_KEY = "london_screenings_trakt_oauth_state";
 const OAUTH_MESSAGE = "london-screenings-trakt-callback";
 const STATE_MAX_AGE_MS = 10 * 60 * 1000;
@@ -67,6 +68,15 @@ function errorMessage(error, fallback) {
 
 export function useTrakt() {
   const [token, setToken] = useState(loadTraktToken);
+  const [accountKey, setAccountKey] = useState(() => {
+    if (!loadTraktToken()) return null;
+    const key = localStorage.getItem(CONNECTION_KEY) || crypto.randomUUID();
+    localStorage.setItem(CONNECTION_KEY, key);
+    return key;
+  });
+  const accountKeyRef = useRef(accountKey);
+  accountKeyRef.current = accountKey;
+  const exchangeVersionRef = useRef(0);
   const [ratings, setRatings] = useState([]);
   const [watchlistTmdbIds, setWatchlistTmdbIds] = useState([]);
 
@@ -88,6 +98,10 @@ export function useTrakt() {
     (message = "", nextStatus = "idle") => {
       loadRequestRef.current += 1;
 
+      accountKeyRef.current = null;
+      setAccountKey(null);
+      exchangeVersionRef.current += 1;
+      localStorage.removeItem(CONNECTION_KEY);
       clearTraktToken();
       setToken(null);
       setRatings([]);
@@ -233,14 +247,21 @@ export function useTrakt() {
       setRatingsError("");
       setWatchlistError("");
 
+      const exchangeVersion = ++exchangeVersionRef.current;
       try {
         const newToken = await exchangeTraktCode(code);
+        if (exchangeVersion !== exchangeVersionRef.current) return;
 
+        const key = crypto.randomUUID();
+        accountKeyRef.current = key;
+        setAccountKey(key);
         saveTraktToken(newToken);
+        localStorage.setItem(CONNECTION_KEY, key);
         setToken(newToken);
 
         await loadTraktData(newToken);
       } catch (exchangeError) {
+        if (exchangeVersion !== exchangeVersionRef.current) return;
         clearConnection(
           errorMessage(
             exchangeError,
@@ -406,17 +427,43 @@ export function useTrakt() {
     }
   }, [loadTraktData, token]);
 
+  useEffect(() => {
+    const changed = (event) => {
+      if (event.key !== CONNECTION_KEY && event.key !== null) return;
+      const nextKey = localStorage.getItem(CONNECTION_KEY);
+      if (nextKey === accountKeyRef.current) return;
+      accountKeyRef.current = nextKey;
+      exchangeVersionRef.current += 1;
+      loadRequestRef.current += 1;
+      setAccountKey(nextKey);
+      setRatings([]); setWatchlistTmdbIds([]);
+      setRatingsStatus("idle"); setWatchlistStatus("idle");
+      setError(""); setRatingsError(""); setWatchlistError("");
+      setToken(nextKey ? loadTraktToken() : null);
+      setStatus("idle");
+    };
+    window.addEventListener("storage", changed);
+    return () => window.removeEventListener("storage", changed);
+  }, []);
+
   const importMovies = useCallback(
-    async (records) => {
+    async (records, options = {}) => {
       if (!token) {
         throw new TraktAuthError("Connect Trakt before importing movies.");
       }
 
+      const assertActive = () => {
+        if (!accountKey || accountKeyRef.current !== accountKey || localStorage.getItem(CONNECTION_KEY) !== accountKey || !loadTraktToken() || options.isActive?.() === false) {
+          throw new Error("The Trakt account changed. The import has stopped.");
+        }
+      };
       try {
+        assertActive();
         const result = await syncTraktImport(token, records, {
           ratings,
           watchlistTmdbIds,
-        });
+        }, { assertActive, onProgress: options.onProgress });
+        assertActive();
 
         saveTraktToken(result.token);
         setToken(result.token);
@@ -424,7 +471,7 @@ export function useTrakt() {
 
         return result;
       } catch (importError) {
-        if (importError instanceof TraktAuthError) {
+        if (accountKeyRef.current === accountKey && importError instanceof TraktAuthError) {
           clearConnection(
             "Your Trakt connection expired. Please connect again.",
             "error"
@@ -433,7 +480,7 @@ export function useTrakt() {
         throw importError;
       }
     },
-    [clearConnection, loadTraktData, ratings, token, watchlistTmdbIds]
+    [accountKey, clearConnection, loadTraktData, ratings, token, watchlistTmdbIds]
   );
 
   return {
@@ -448,6 +495,7 @@ export function useTrakt() {
     watchlistStatus,
     watchlistError,
 
+    accountKey,
     isConnected: Boolean(token),
     isConfigured: TRAKT_CONFIGURED,
 

@@ -362,3 +362,6 @@
     scroll-behavior: auto;
   }
 }
+
+.native-watchlist-import-action { padding: 16px 22px 0; }
+.native-watchlist-import-action button { width: auto; }

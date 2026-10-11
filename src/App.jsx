@@ -4,6 +4,7 @@ import DateTimeFilter from "./DateTimeFilter.jsx";
 import DistanceFilter from "./DistanceFilter.jsx";
 import FiltersDropdown from "./FiltersDropdown.jsx";
 import WatchDataModal from "./WatchDataModal.jsx";
+import { clearImportDraft, loadImportDraft } from "./movieImport/draft.js";
 import MovieImportModal from "./MovieImportModal.jsx";
 import AuthModal from "./AuthModal.jsx";
 import NativeWatchlistModal from "./NativeWatchlistModal.jsx";
@@ -59,6 +60,8 @@ export default function App() {
   const pendingWatchlistProcessingRef = useRef(false);
   const [watchDataModalOpen, setWatchDataModalOpen] = useState(false);
   const [movieImportModalOpen, setMovieImportModalOpen] = useState(false);
+  const [movieImportDestination, setMovieImportDestination] = useState("trakt");
+  const [resumeMovieImportDraft, setResumeMovieImportDraft] = useState(false);
   const [resultsView, setResultsView] = useState("time");
   const [cinemaLocations, setCinemaLocations] = useState([]);
   const [cinemaLocationsStatus, setCinemaLocationsStatus] = useState("loading");
@@ -86,6 +89,18 @@ export default function App() {
   const trakt = useTrakt();
   const auth = useAuth();
   const nativeWatchlist = useNativeWatchlist(auth.user);
+
+  useEffect(() => {
+    if (auth.loading) return;
+    const draft = loadImportDraft({ nativeUserId: auth.user?.id, traktAccountKey: trakt.accountKey });
+    if (draft) {
+      setMovieImportDestination(draft.destination);
+      setResumeMovieImportDraft(true);
+      setMovieImportModalOpen(true);
+    }
+    // A stored draft is restored once after initial authentication has loaded.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [auth.loading]);
 
   const traktBusy =
     trakt.status === "exchanging" || trakt.status === "fetching";
@@ -402,11 +417,24 @@ export default function App() {
   }, []);
 
   const openMovieImportModal = useCallback(() => {
+    clearImportDraft();
+    setResumeMovieImportDraft(false);
+    setMovieImportDestination("trakt");
     setMovieImportModalOpen(true);
   }, []);
 
   const closeMovieImportModal = useCallback(() => {
+    clearImportDraft();
+    setResumeMovieImportDraft(false);
     setMovieImportModalOpen(false);
+  }, []);
+
+  const openNativeMovieImportModal = useCallback(() => {
+    clearImportDraft();
+    setResumeMovieImportDraft(false);
+    setMovieImportDestination("native");
+    setNativeWatchlistModalOpen(false);
+    setMovieImportModalOpen(true);
   }, []);
 
   const openNativeWatchlistModal = useCallback(() => {
@@ -604,7 +632,7 @@ export default function App() {
 
   let emptyMessage = "No upcoming screenings match your current filters.";
 
-  let authContextMessage = "";
+  let authContextMessage = movieImportModalOpen ? "Log in to import films to your London Screening Watchlist. Your selections will be preserved for review." : "";
   if (pendingWatchlistAction?.kind === "add") {
     authContextMessage = `Log in to save ${
       pendingWatchlistAction.title || "this film"
@@ -976,6 +1004,7 @@ export default function App() {
       <NativeWatchlistModal
         isOpen={nativeWatchlistModalOpen}
         onClose={closeNativeWatchlistModal}
+        onImport={openNativeMovieImportModal}
         items={nativeWatchlist.items}
         status={nativeWatchlist.status}
         error={nativeWatchlist.error}
@@ -1000,7 +1029,19 @@ export default function App() {
       <MovieImportModal
         isOpen={movieImportModalOpen}
         onClose={closeMovieImportModal}
-        onImport={trakt.importMovies}
+        initialDestination={movieImportDestination}
+        resumeDraft={resumeMovieImportDraft}
+        nativeUserId={auth.user?.id}
+        nativeUserLabel={auth.user?.email}
+        authLoading={auth.loading}
+        traktAccountKey={trakt.accountKey}
+        traktConnected={trakt.isConnected}
+        traktConnecting={traktBusy}
+        onRequireNativeAuth={openAuthModal}
+        onConnectTrakt={handleConnectTrakt}
+        onNativeImport={nativeWatchlist.importMovies}
+        onTraktImport={trakt.importMovies}
+        suspended={authModalOpen || auth.recoveryMode}
       />
     </div>
   );

@@ -1,5 +1,5 @@
-const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || "").trim();
-const SUPABASE_ANON_KEY = (import.meta.env.VITE_SUPABASE_ANON_KEY || "").trim();
+const SUPABASE_URL = (import.meta.env?.VITE_SUPABASE_URL || "").trim();
+const SUPABASE_ANON_KEY = (import.meta.env?.VITE_SUPABASE_ANON_KEY || "").trim();
 const BATCH_SIZE = 100;
 
 async function matcherRequest(payload) {
@@ -26,11 +26,12 @@ async function matcherRequest(payload) {
   return data;
 }
 
-export async function matchImportRecords(records) {
+export async function matchImportRecords(records, { onProgress, isActive = () => true, request = matcherRequest } = {}) {
   const results = [];
-  const validRecords = records.filter((record) => !record.invalidReason);
+  const validRecords = records.filter((record) => !record.invalidReason || record.ratingConflict || record.ratingInvalidReason);
 
   for (let index = 0; index < validRecords.length; index += BATCH_SIZE) {
+    if (!isActive()) throw new Error("Matching was cancelled.");
     const batch = validRecords.slice(index, index + BATCH_SIZE).map((record) => ({
       clientId: record.clientId,
       title: record.title,
@@ -39,17 +40,19 @@ export async function matchImportRecords(records) {
       tmdbId: record.tmdbId,
       traktId: record.traktId,
     }));
-    const data = await matcherRequest({ action: "match", records: batch });
+    const data = await request({ action: "match", records: batch });
 
     if (!Array.isArray(data.results)) {
       throw new Error("The movie matcher returned invalid data.");
     }
+    if (!isActive()) throw new Error("Matching was cancelled.");
     results.push(...data.results);
+    onProgress?.({ completed: Math.min(index + BATCH_SIZE, validRecords.length), total: validRecords.length });
   }
 
   const byClientId = new Map(results.map((result) => [result.clientId, result]));
   return records.map((record) => {
-    if (record.invalidReason) return { ...record, status: "invalid" };
+    if (record.invalidReason && !record.ratingConflict && !record.ratingInvalidReason) return { ...record, status: "invalid" };
     const result = byClientId.get(record.clientId);
     return result
       ? {

@@ -33,3 +33,21 @@ test("parses watchlist and ratings from a Letterboxd export ZIP", async () => {
   assert.equal(records[0].watchlist, true);
   assert.equal(records[1].rating, 10);
 });
+
+test("text files use the title parser instead of silently dropping the first film", async () => {
+  const records = await parseImportFile(new File(["Alien\nHeat (1995)\nParis, Texas"], "films.txt"));
+  assert.deepEqual(records.map((r) => r.title), ["Alien", "Heat", "Paris, Texas"]);
+});
+test("ignores unrelated ZIP files and preserves watchlist films with ratings", async () => {
+  const archive = zipSync({
+    "watchlist.csv": strToU8("Name,Year,Rating\nAlien,1979,4.5"),
+    "ratings.csv": strToU8("Name,Year,Rating\nHeat,1995,5"),
+    "unrelated.csv": strToU8("Name,Year\nWrong,2000"),
+  });
+  const result = await parseImportFile(new File([archive], "letterboxd.zip"));
+  assert.equal(result.length, 2); assert.equal(result[0].watchlist, true);
+  assert.equal(result[1].watchlist, false);
+});
+test("enforces compressed file size before reading it", async () => {
+  await assert.rejects(parseImportFile({ name: "large.zip", size: 11 * 1024 * 1024, arrayBuffer() { throw new Error("must not read"); } }), /10 MB/);
+});

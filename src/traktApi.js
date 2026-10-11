@@ -1,12 +1,12 @@
 const TRAKT_API_BASE = "https://api.trakt.tv";
-const TRAKT_CLIENT_ID = (import.meta.env.VITE_TRAKT_CLIENT_ID || "").trim();
+const TRAKT_CLIENT_ID = (import.meta.env?.VITE_TRAKT_CLIENT_ID || "").trim();
 const TRAKT_REDIRECT_URI = (
-  import.meta.env.VITE_TRAKT_REDIRECT_URI ||
+  import.meta.env?.VITE_TRAKT_REDIRECT_URI ||
   "https://london-screenings-tq8c.bolt.host"
 ).trim();
-const SUPABASE_URL = (import.meta.env.VITE_SUPABASE_URL || "").trim();
+const SUPABASE_URL = (import.meta.env?.VITE_SUPABASE_URL || "").trim();
 const SUPABASE_ANON_KEY = (
-  import.meta.env.VITE_SUPABASE_ANON_KEY || ""
+  import.meta.env?.VITE_SUPABASE_ANON_KEY || ""
 ).trim();
 
 const TOKEN_STORAGE_KEY = "london_screenings_trakt_token";
@@ -459,8 +459,10 @@ async function postTraktSync(token, path, movies) {
   return data;
 }
 
-async function postTraktSyncWithRefresh(token, path, movies) {
+async function postTraktSyncWithRefresh(token, path, movies, assertActive = () => {}) {
+  assertActive();
   let currentToken = await ensureFreshToken(token);
+  assertActive();
 
   try {
     return {
@@ -470,7 +472,9 @@ async function postTraktSyncWithRefresh(token, path, movies) {
   } catch (error) {
     if (!(error instanceof TraktAuthError)) throw error;
 
+    assertActive();
     currentToken = await refreshTraktToken(currentToken.refresh_token);
+    assertActive();
     return {
       token: currentToken,
       data: await postTraktSync(currentToken, path, movies),
@@ -495,6 +499,7 @@ async function syncMovieBatches(token, path, items, responseSection, options = {
   const summary = emptySyncSummary(items.length);
 
   for (let index = 0; index < items.length; index += SYNC_BATCH_SIZE) {
+    options.assertActive?.();
     const batch = items.slice(index, index + SYNC_BATCH_SIZE);
 
     try {
@@ -505,8 +510,10 @@ async function syncMovieBatches(token, path, items, responseSection, options = {
           ...(item.rating ? { rating: item.rating } : {}),
           ...(item.watchedAt ? { watched_at: item.watchedAt } : {}),
           ids: { tmdb: item.tmdbId },
-        }))
+        })),
+        options.assertActive
       );
+      options.assertActive?.();
 
       currentToken = result.token;
       const notFound = notFoundTmdbIds(result.data);
@@ -527,6 +534,7 @@ async function syncMovieBatches(token, path, items, responseSection, options = {
       summary.failed += notFound.length;
       summary.failedTmdbIds.push(...notFound);
     } catch (error) {
+      options.assertActive?.();
       if (error instanceof TraktAuthError) throw error;
 
       summary.failed += batch.length;
@@ -535,12 +543,14 @@ async function syncMovieBatches(token, path, items, responseSection, options = {
         error instanceof Error ? error.message : "A Trakt batch failed."
       );
     }
+    options.onBatch?.(batch.length);
   }
 
   return { token: currentToken, summary };
 }
 
-export async function syncTraktImport(token, records, existingData = {}) {
+export async function syncTraktImport(token, records, existingData = {}, options = {}) {
+  options.assertActive?.();
   const existingWatchlist = new Set(
     (existingData.watchlistTmdbIds || []).map(Number)
   );
@@ -573,6 +583,14 @@ export async function syncTraktImport(token, records, existingData = {}) {
       operation: existingRatings.has(item.tmdbId) ? "update" : "add",
     }));
 
+  let completed = 0;
+  const total = watchlistItems.length + historyItems.length + ratingItems.length;
+  const batchOptions = {
+    assertActive: options.assertActive,
+    onBatch(count) { completed += count; options.onProgress?.({ completed, total }); },
+  };
+  options.onProgress?.({ completed, total });
+
   let currentToken = token;
   let watchlist = emptySyncSummary(requestedWatchlistItems.length);
   let ratings = emptySyncSummary(requestedRatingItems.length);
@@ -586,7 +604,8 @@ export async function syncTraktImport(token, records, existingData = {}) {
       currentToken,
       "/sync/watchlist",
       watchlistItems,
-      "movies"
+      "movies",
+      batchOptions
     );
     currentToken = result.token;
     watchlist = {
@@ -601,7 +620,8 @@ export async function syncTraktImport(token, records, existingData = {}) {
       currentToken,
       "/sync/history",
       historyItems,
-      "movies"
+      "movies",
+      batchOptions
     );
 
     currentToken = result.token;
@@ -617,7 +637,7 @@ export async function syncTraktImport(token, records, existingData = {}) {
       "/sync/ratings",
       ratingItems,
       "movies",
-      { classifyOperations: true }
+      { ...batchOptions, classifyOperations: true }
     );
     currentToken = result.token;
     ratings = {
@@ -627,5 +647,6 @@ export async function syncTraktImport(token, records, existingData = {}) {
     };
   }
 
+  options.assertActive?.();
   return { token: currentToken, watchlist, ratings, history };
 }

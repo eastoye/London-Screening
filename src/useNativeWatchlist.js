@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createNativeWatchlistApi } from "./nativeWatchlistApi.js";
 import { normaliseTmdbId, sortWatchlistItems } from "./nativeWatchlist.js";
+import { importNativeMovies } from "./movieImport/nativeImport.js";
 import { supabase } from "./supabaseClient.js";
 
 const watchlistApi = createNativeWatchlistApi(supabase);
@@ -31,10 +32,12 @@ function mergeListWithMutations(items, addedItems, removedTmdbIds) {
 export function useNativeWatchlist(user) {
   const userId = user?.id ?? null;
   const activeUserIdRef = useRef(userId);
+  activeUserIdRef.current = userId;
   const requestVersionRef = useRef(0);
   const addedItemsSinceListRef = useRef(new Map());
   const removedTmdbIdsSinceListRef = useRef(new Set());
   const [items, setItems] = useState([]);
+  const [itemsOwnerId, setItemsOwnerId] = useState(userId);
   const [status, setStatus] = useState("idle");
   const [error, setError] = useState("");
   const [savingTmdbIds, setSavingTmdbIds] = useState(() => new Set());
@@ -46,6 +49,7 @@ export function useNativeWatchlist(user) {
     requestVersionRef.current = version;
     addedItemsSinceListRef.current = new Map();
     removedTmdbIdsSinceListRef.current = new Set();
+    setItemsOwnerId(userId);
     setItems([]);
     setError("");
     setSavingTmdbIds(new Set());
@@ -209,9 +213,22 @@ export function useNativeWatchlist(user) {
     [userId]
   );
 
+  const importMovies = useCallback(async (records, options = {}) => {
+    const isCurrentAccount = () => activeUserIdRef.current === userId && options.isActive?.() !== false;
+    const result = await importNativeMovies(records, {
+      importBatch: watchlistApi.importBatch, userId, isCurrentAccount,
+      onProgress: options.onProgress,
+    });
+    if (!isCurrentAccount()) throw new Error("The account changed. The import has stopped.");
+    try { await refresh(); }
+    catch { result.refreshWarning = "The import results are saved, but your watchlist could not refresh. Reopen it to try again."; }
+    if (!isCurrentAccount()) throw new Error("The account changed. The import has stopped.");
+    return result;
+  }, [userId, refresh]);
+
   const tmdbIds = useMemo(
-    () => new Set(items.map((item) => item.tmdbId)),
-    [items]
+    () => new Set((itemsOwnerId === userId ? items : []).map((item) => item.tmdbId)),
+    [items, itemsOwnerId, userId]
   );
 
   const clearError = useCallback(() => setError(""), []);
@@ -219,14 +236,15 @@ export function useNativeWatchlist(user) {
   return {
     add,
     clearError,
-    error,
-    items,
+    error: itemsOwnerId === userId ? error : "",
+    items: itemsOwnerId === userId ? items : [],
+    importMovies,
     refresh,
     remove,
-    removingTmdbIds,
-    savingTmdbIds,
+    removingTmdbIds: itemsOwnerId === userId ? removingTmdbIds : new Set(),
+    savingTmdbIds: itemsOwnerId === userId ? savingTmdbIds : new Set(),
     search: watchlistApi.search,
-    status,
+    status: itemsOwnerId === userId ? status : userId ? "loading" : "idle",
     tmdbIds,
   };
 }

@@ -88,22 +88,24 @@ export function createNativeWatchlistApi(client) {
     async list(userId) {
       if (!userId) return [];
 
-      const { data, error } = await client
-        .from("user_watchlist")
-        .select(WATCHLIST_COLUMNS)
-        .eq("user_id", userId)
-        .order("added_at", { ascending: false });
-
-      if (error) {
-        throw new NativeWatchlistError(
-          "Your watchlist could not be loaded. Please try again.",
-          error.code
-        );
+      const rows = [];
+      const pageSize = 500;
+      for (let start = 0; ; start += pageSize) {
+        const { data, error } = await client
+          .from("user_watchlist")
+          .select(WATCHLIST_COLUMNS)
+          .eq("user_id", userId)
+          .order("added_at", { ascending: false })
+          .order("tmdb_id", { ascending: true })
+          .range(start, start + pageSize - 1);
+        if (error) {
+          throw new NativeWatchlistError("Your watchlist could not be loaded. Please try again.", error.code);
+        }
+        rows.push(...(data ?? []));
+        if (!data || data.length < pageSize) break;
       }
-
-      return sortWatchlistItems(
-        (data ?? []).map(mapWatchlistRow).filter(Boolean)
-      );
+      // Exact-ID deduplication also tolerates a concurrent save between page requests.
+      return sortWatchlistItems([...new Map(rows.map(mapWatchlistRow).filter(Boolean).map((item) => [item.tmdbId, item])).values()]);
     },
 
     async search(query) {
@@ -178,6 +180,31 @@ export function createNativeWatchlistApi(client) {
       }
 
       return item;
+    },
+
+    async importBatch(userId, tmdbIds) {
+      const { data: sessionData, error: sessionError } = await client.auth.getSession();
+      const session = sessionData?.session;
+      if (sessionError || !session?.access_token) {
+        throw new NativeWatchlistError("Log in again to continue the import.", "authentication_required");
+      }
+      if (session.user?.id !== userId) {
+        throw new NativeWatchlistError("The account changed. The import has stopped.", "account_changed");
+      }
+      const { data, error } = await client.functions.invoke("native-watchlist-movies", {
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        body: { action: "import", tmdbIds },
+      });
+      if (error) {
+        throw new NativeWatchlistError(
+          await functionErrorMessage(error, "This batch could not be saved. Retry safely."),
+          error.context?.status === 401 ? "authentication_required" : "import_failed"
+        );
+      }
+      if (data?.userId !== userId || !Array.isArray(data.results)) {
+        throw new NativeWatchlistError("The import service returned an invalid response.", "invalid_response");
+      }
+      return data;
     },
 
     async remove(userId, tmdbId) {

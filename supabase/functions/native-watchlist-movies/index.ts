@@ -1,6 +1,8 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 
+import { importWatchlistBatch, readWatchlistBody, validateImportIds } from "../_shared/nativeWatchlistBatch.ts";
+
 const TMDB_API_BASE = "https://api.themoviedb.org/3";
 const MAX_QUERY_LENGTH = 200;
 const MAX_RESULTS = 10;
@@ -115,6 +117,7 @@ async function tmdbGet(token: string, path: string): Promise<unknown> {
       Authorization: `Bearer ${token}`,
       Accept: "application/json",
     },
+    signal: AbortSignal.timeout(8000),
   });
 
   if (!response.ok) throw new TmdbRequestError(response.status);
@@ -221,8 +224,9 @@ Deno.serve(async (request) => {
   let body: unknown;
 
   try {
-    body = await request.json();
-  } catch {
+    body = await readWatchlistBody(request);
+  } catch (error) {
+    if (error instanceof RangeError) return json({ error: "The request is too large." }, 413);
     return json({ error: "The request body must be valid JSON." }, 400);
   }
 
@@ -248,8 +252,48 @@ Deno.serve(async (request) => {
     }
   }
 
+  if (body.action === "import") {
+    let ids: number[];
+    try {
+      ids = validateImportIds(body.tmdbIds);
+    } catch (error) {
+      return json({ error: (error as Error).message }, 400);
+    }
+    const admin = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    try {
+      return json(await importWatchlistBatch(user.id, ids, {
+        existing: async (userId, tmdbIds) => {
+          const { data, error } = await admin.from("user_watchlist")
+            .select("tmdb_id").eq("user_id", userId).in("tmdb_id", tmdbIds);
+          if (error) throw new Error("Your existing watchlist could not be checked.");
+          return (data ?? []).map((row) => Number(row.tmdb_id));
+        },
+        movie: async (id) => {
+          try { return await getMovie(tmdbToken, id); }
+          catch (error) {
+            if (error instanceof TmdbRequestError && error.status === 404) {
+              throw new Error("That film could not be found on TMDB.");
+            }
+            throw new Error("TMDB verification is temporarily unavailable. Retry this film later.");
+          }
+        },
+        insert: async (rows) => {
+          const { data, error } = await admin.from("user_watchlist")
+            .upsert(rows, { onConflict: "user_id,tmdb_id", ignoreDuplicates: true })
+            .select("tmdb_id");
+          if (error) throw error;
+          return (data ?? []).map((row) => Number(row.tmdb_id));
+        },
+      }));
+    } catch {
+      return json({ error: "The import could not be checked. Please try again." }, 500);
+    }
+  }
+
   if (body.action !== "add") {
-    return json({ error: 'Action must be either "search" or "add".' }, 400);
+    return json({ error: 'Action must be "search", "add" or "import".' }, 400);
   }
 
   const tmdbId = positiveInteger(body.tmdbId);
