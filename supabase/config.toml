@@ -15,3 +15,15 @@ verify_jwt = true
 
 [functions.process-screening-alerts]
 verify_jwt = false
+
+[functions.screening-alerts-email]
+verify_jwt = true
+
+[functions.process-screening-alerts-email]
+verify_jwt = false
+
+[functions.screening-alerts-email-links]
+verify_jwt = false
+
+[functions.screening-alerts-email-webhook]
+verify_jwt = false
