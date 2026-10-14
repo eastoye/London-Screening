@@ -6,7 +6,6 @@ import { getScreeningDisplayChips } from "./screeningPresentation.js";
 import { formatRuntime, resolveMovieDetails } from "./movieDetails.js";
 import { getMovieTrailerUrl } from "./movieTrailer.js";
 import { confirmedMovieTmdbId } from "./nativeWatchlist.js";
-import { ScreeningFollowButton } from "./ScreeningAlerts.jsx";
 
 function ExpandIcon({ expanded }) {
   return (
@@ -185,7 +184,6 @@ function MovieGroup({
   removingTmdbIds,
   onToggleWatchlist,
   onFindMovie,
-  alertControls,
 }) {
   const [expanded, setExpanded] = useState(false);
   const regionId = useId();
@@ -223,7 +221,7 @@ function MovieGroup({
 
   return (
     <div className="movie-group">
-      <div className={`movie-summary-shell${alertControls ? " with-screening-alerts" : ""}`}>
+      <div className="movie-summary-shell">
         <button
           className="movie-summary"
           type="button"
@@ -300,7 +298,7 @@ function MovieGroup({
                 : "Find"}
           </span>
         </button>
-        <ScreeningFollowButton movie={group.movie} title={group.title} {...alertControls} /></div>
+        </div>
       </div>
 
       {expanded && (
@@ -330,7 +328,6 @@ export default function MovieDayGroup({
   removingTmdbIds,
   onToggleWatchlist,
   onFindMovie,
-  alertControls,
 }) {
   const groups = useMemo(
     () => groupScreeningsByMovie(screenings),
@@ -353,7 +350,6 @@ export default function MovieDayGroup({
           removingTmdbIds={removingTmdbIds}
           onToggleWatchlist={onToggleWatchlist}
           onFindMovie={onFindMovie}
-          alertControls={alertControls}
         />
       ))}
     </section>

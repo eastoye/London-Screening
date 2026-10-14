@@ -1,7 +1,6 @@
 import { londonTime, londonDateHeading, isToday } from "./time.js";
 import ScreeningPoster from "./ScreeningPoster.jsx";
 import { getScreeningDisplayChips } from "./screeningPresentation.js";
-import { ScreeningFollowButton } from "./ScreeningAlerts.jsx";
 
 function ChevronIcon() {
   return (
@@ -22,7 +21,7 @@ function ChevronIcon() {
   );
 }
 
-export default function ScreeningRow({ screening, userRating, alertControls }) {
+export default function ScreeningRow({ screening, userRating }) {
   const soldOut =
     screening.sold_out === true || screening.availability_status === "sold_out";
   const bookable = Boolean(screening.booking_url) && !soldOut;
@@ -93,11 +92,10 @@ export default function ScreeningRow({ screening, userRating, alertControls }) {
     </div>
   );
 
-  if (!alertControls) return row;
-  return <div className="screening-with-alerts">{row}<ScreeningFollowButton movie={movie} title={screening.movie_title} {...alertControls} /></div>;
+  return row;
 }
 
-export function DayGroup({ dateKey, screenings, ratingsByTmdbId, alertControls }) {
+export function DayGroup({ dateKey, screenings, ratingsByTmdbId }) {
   const heading = londonDateHeading(screenings[0].start_time);
   const today = isToday(screenings[0].start_time);
 
@@ -117,7 +115,6 @@ export function DayGroup({ dateKey, screenings, ratingsByTmdbId, alertControls }
             key={screening.id}
             screening={screening}
             userRating={userRating}
-            alertControls={alertControls}
           />
         );
       })}

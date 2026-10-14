@@ -714,12 +714,7 @@ export default function App() {
     authContextMessage = `Log in to save ${
       pendingWatchlistAction.title || "this film"
     } to your watchlist.`;
-  } else if (pendingWatchlistAction?.kind === "search") {
-    authContextMessage = `Log in to find and save the exact version of ${pendingWatchlistAction.query}.`;
   }
-  if (pendingAlertAction?.kind === "follow") authContextMessage = `Log in to receive notifications about newly added screenings for ${pendingAlertAction.title || "this film"}. Choosing a film won't turn on emails.`;
-  else if (pendingAlertAction?.kind === "search") authContextMessage = `Log in to find the exact version of ${pendingAlertAction.query} for screening alerts.`;
-  else if (pendingAlertAction?.kind === "manage") authContextMessage = "Log in to choose films and manage screening alerts. Your watchlist stays separate.";
 
   if (noCinemasSelected) {
     emptyMessage =
@@ -769,9 +764,6 @@ export default function App() {
                       ? ` (${nativeWatchlist.items.length})`
                       : ""}
                   </button>
-                  <button className="text-button header-link alerts-link" type="button" onClick={openAlertsModal}>
-                    Screening alerts{alerts.filmsLoaded ? ` (${alerts.films.length})` : ""}
-                  </button>
                   <button
                     className="text-button header-link logout-link"
                     type="button"
@@ -789,7 +781,7 @@ export default function App() {
                 >
                   Log in
                 </button>
-                <button className="text-button header-link alerts-link" type="button" onClick={openAlertsModal}>Screening alerts</button></>
+                </>
               )}
             </div>
 
@@ -889,9 +881,6 @@ export default function App() {
             </button>
           </div>
         )}
-
-        {alertsNotice && alertsNotice.ownerId === auth.user?.id && <div className="account-message success" role="status"><span>{alertsNotice.message}</span><button className="text-button" type="button" onClick={() => setAlertsNotice(null)}>Dismiss</button></div>}
-        {alerts.error && !alertsModalOpen && <div className="account-message error" role="alert"><span>{alerts.error}</span><button className="text-button" type="button" onClick={openAlertsModal}>Manage alerts</button></div>}
 
         {trakt.error && (
           <div className="trakt-error" role="status">
@@ -1041,7 +1030,6 @@ export default function App() {
                 dateKey={key}
                 screenings={rows}
                 ratingsByTmdbId={ratingsByTmdbId}
-                alertControls={alertControls}
               />
             ) : (
               <MovieDayGroup
@@ -1054,7 +1042,6 @@ export default function App() {
                 removingTmdbIds={nativeWatchlist.removingTmdbIds}
                 onToggleWatchlist={handleToggleNativeWatchlist}
                 onFindMovie={handleFindNativeWatchlistMovie}
-                alertControls={alertControls}
               />
             )
           ))}
@@ -1088,18 +1075,6 @@ export default function App() {
         onUpdatePassword={auth.updateUserPassword}
         recoveryMode={auth.recoveryMode}
         contextMessage={authContextMessage}
-      />
-
-      <ScreeningAlertsModal
-        key={`${auth.user?.id ?? "anonymous"}:${auth.user?.email ?? ""}`}
-        isOpen={alertsModalOpen}
-        onClose={closeAlertsModal}
-        user={auth.user}
-        authLoading={auth.loading}
-        alerts={alerts}
-        onLogin={loginForAlerts}
-        initialQuery={alertsInitialQuery}
-        onInitialQueryConsumed={consumeAlertsQuery}
       />
 
       <NativeWatchlistModal
