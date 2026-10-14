@@ -103,7 +103,7 @@ export default function App() {
 
   useEffect(() => {
     if (!auth.isAuthenticated || !pendingAlertAction) return;
-    if (pendingAlertAction.kind === "follow" && (!alerts.filmsLoaded || pendingAlertProcessingRef.current)) return;
+    if (pendingAlertAction.kind === "Notify Me" && (!alerts.filmsLoaded || pendingAlertProcessingRef.current)) return;
     const action = pendingAlertAction;
     clearPendingAlertAction();
     setPendingAlertAction(null);
