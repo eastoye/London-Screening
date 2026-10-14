@@ -87,7 +87,7 @@ body {
   min-width: 0;
   align-items: center;
   justify-content: flex-end;
-  column-gap: 8px;
+  column-gap: 0;
 }
 
 .account-button,
@@ -131,7 +131,7 @@ body {
   min-width: 0;
   align-items: center;
   justify-content: flex-end;
-  column-gap: 8px;
+  column-gap: 0;
 }
 
 .header-link {
@@ -148,6 +148,7 @@ body {
 }
 
 .account-email {
+  margin-right: 10px;
   max-width: 260px;
   overflow: hidden;
   color: var(--ink-soft);
@@ -230,8 +231,8 @@ body {
 }
 
 .account-control > .header-link {
-  padding-right: 6px;
-  padding-left: 6px;
+  padding-right: 10px;
+  padding-left: 10px;
 }
 
 .header-actions > .trakt-button {
@@ -843,8 +844,8 @@ body {
   }
 
   .account-control > .header-link {
-    padding-right: 6px;
-    padding-left: 6px;
+    padding-right: 10px;
+    padding-left: 10px;
   }
 
   .header-actions > .trakt-button {
