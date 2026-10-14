@@ -85,7 +85,9 @@ body {
 .account-control {
   display: flex;
   min-width: 0;
+  align-items: center;
   justify-content: flex-end;
+  gap: 0;
 }
 
 .account-button,
@@ -118,6 +120,8 @@ body {
 
 .account-button:focus-visible,
 .trakt-button:focus-visible {
+  
+
   outline: 3px solid rgba(184, 52, 26, 0.18);
   outline-offset: 2px;
 }
@@ -271,8 +275,22 @@ body {
   cursor: pointer;
 }
 
-.account-email + .header-link {
+.account-email + .header-link,
+.account-button + .header-link {
   border-left: 1px solid var(--line);
+}
+
+.account-control > .account-button {
+  padding: 7px 11px;
+  font-size: 12px;
+}
+
+.account-control > .header-link {
+  padding-right: 0;
+}
+
+.header-actions > .trakt-button {
+  margin-top: 9px;
 }
 
 .logout-link {
@@ -877,6 +895,14 @@ body {
   .account-button,
   .trakt-button {
     align-self: flex-start;
+  }
+
+  .account-control > .header-link {
+    padding-left: 10px;
+  }
+
+  .header-actions > .trakt-button {
+    margin-top: 9px;
   }
 
   .trakt-connected {

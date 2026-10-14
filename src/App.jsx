@@ -791,7 +791,7 @@ export default function App() {
                 >
                   Log in
                 </button>
-                <button className="text-button" type="button" onClick={openAlertsModal}>Screening alerts</button></>
+                <button className="text-button header-link alerts-link" type="button" onClick={openAlertsModal}>Screening alerts</button></>
               )}
             </div>
 
