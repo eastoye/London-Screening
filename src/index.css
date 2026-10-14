@@ -230,11 +230,16 @@ body {
 }
 
 .account-control > .header-link {
+  padding-right: 12px;
+  padding-left: 12px;
+}
+
+.account-control > .header-link:last-child {
   padding-right: 0;
 }
 
 .header-actions > .trakt-button {
-  margin-top: 9px;
+  margin-top: 14px;
 }
 
 .logout-link {
@@ -842,11 +847,16 @@ body {
   }
 
   .account-control > .header-link {
-    padding-left: 10px;
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .account-control > .header-link:last-child {
+    padding-right: 0;
   }
 
   .header-actions > .trakt-button {
-    margin-top: 9px;
+    margin-top: 14px;
   }
 
   .trakt-connected {
