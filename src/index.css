@@ -87,7 +87,7 @@ body {
   min-width: 0;
   align-items: center;
   justify-content: flex-end;
-  gap: 0;
+  column-gap: 8px;
 }
 
 .account-button,
@@ -131,7 +131,7 @@ body {
   min-width: 0;
   align-items: center;
   justify-content: flex-end;
-  gap: 0;
+  column-gap: 8px;
 }
 
 .header-link {
@@ -230,8 +230,8 @@ body {
 }
 
 .account-control > .header-link {
-  padding-right: 12px;
-  padding-left: 12px;
+  padding-right: 6px;
+  padding-left: 6px;
 }
 
 .account-control > .header-link:last-child {
@@ -847,8 +847,8 @@ body {
   }
 
   .account-control > .header-link {
-    padding-right: 12px;
-    padding-left: 12px;
+    padding-right: 6px;
+    padding-left: 6px;
   }
 
   .account-control > .header-link:last-child {
