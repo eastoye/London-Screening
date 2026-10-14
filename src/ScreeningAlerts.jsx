@@ -12,8 +12,8 @@ export function ScreeningFollowButton({ movie, title, followedTmdbIds, busyTmdbI
   const id = confirmedAlertTmdbId(movie);
   const following = Boolean(id && followedTmdbIds?.has(id));
   const busy = Boolean(id && busyTmdbIds?.has(id));
-  const label = id ? following ? "Following" : "Follow" : "Find film";
-  const description = id ? following ? `Stop following screenings for ${title}` : `Follow newly added screenings for ${title}` : `Find the exact version of ${title} for screening alerts`;
+  const label = id ? following ? "Notified" : "Notify Me" : "Find film";
+  const description = id ? following ? `Stop notifications for ${title}` : `Notify me about newly added screenings for ${title}` : `Find the exact version of ${title} for screening alerts`;
   return <button type="button" className={`screening-follow-button${following ? " is-following" : ""}`} disabled={Boolean(id && (busy || loading))} aria-pressed={id ? following : undefined} aria-label={description} title={description} onClick={() => id ? onToggleFollow({ tmdbId: id, title, following }) : onFindAlertFilm(title)}><BellIcon /><span>{busy ? "Working…" : label}</span></button>;
 }
 
@@ -22,7 +22,7 @@ function Film({ film, followed, busy, onFollow, onRemove, candidate = false }) {
   return <article className="screening-alert-film">
     <ScreeningPoster movie={{ match_status: "matched", poster_path: film.posterPath }} className="screening-alert-poster" />
     <div className="screening-alert-film-body"><h4>{title}{film.releaseYear ? ` (${film.releaseYear})` : ""}</h4>{candidate && film.overview && <p className="screening-alert-overview">{film.overview}</p>}</div>
-    <button type="button" className="screening-alert-secondary" disabled={busy || (candidate && followed)} onClick={() => candidate ? onFollow(film.tmdbId, title) : onRemove(film.tmdbId, title)} aria-label={candidate ? followed ? `Already following ${title}` : `Follow newly added screenings for ${title}` : `Stop following screenings for ${title}`}>{busy ? "Working…" : candidate ? followed ? "Following" : "Follow" : "Remove"}</button>
+    <button type="button" className="screening-alert-secondary" disabled={busy || (candidate && followed)} onClick={() => candidate ? onFollow(film.tmdbId, title) : onRemove(film.tmdbId, title)} aria-label={candidate ? followed ? `Already notified about ${title}` : `Notify me about newly added screenings for ${title}` : `Stop notifications for ${title}`}>{busy ? "Working…" : candidate ? followed ? "Notified" : "Notify Me" : "Remove"}</button>
   </article>;
 }
 
@@ -130,7 +130,7 @@ export default function ScreeningAlertsModal({ isOpen, onClose, user, authLoadin
     try {
       await (remove ? alerts.remove(id) : alerts.follow(id));
       if (cycle === cycleRef.current) {
-        setNotice(remove ? `Stopped following ${title}.` : `Following ${title}. This doesn't turn on email alerts.`);
+        setNotice(remove ? `Stopped notifications for ${title}.` : `You’ll be notified about ${title}. This doesn't turn on email alerts.`);
         if (!document.activeElement?.isConnected || document.activeElement === document.body) closeRef.current?.focus();
       }
     } catch { /* The account-scoped store exposes the request error. */ }

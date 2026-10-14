@@ -103,7 +103,7 @@ export default function App() {
 
   useEffect(() => {
     if (!auth.isAuthenticated || !pendingAlertAction) return;
-    if (pendingAlertAction.kind === "Notify Me" && (!alerts.filmsLoaded || pendingAlertProcessingRef.current)) return;
+    if (pendingAlertAction.kind === "follow" && (!alerts.filmsLoaded || pendingAlertProcessingRef.current)) return;
     const action = pendingAlertAction;
     clearPendingAlertAction();
     setPendingAlertAction(null);
@@ -114,12 +114,12 @@ export default function App() {
     }
     const ownerId = auth.user.id;
     if (alerts.tmdbIds.has(action.tmdbId)) {
-      setAlertsNotice({ ownerId, message: `Already following ${action.title || "this film"}.` });
+      setAlertsNotice({ ownerId, message: `Already notifying you about ${action.title || "this film"}.` });
       return;
     }
     pendingAlertProcessingRef.current = true;
     alerts.follow(action.tmdbId).then(() => {
-      if (activeAlertUserRef.current === ownerId) setAlertsNotice({ ownerId, message: `Following ${action.title || "this film"}. Email alerts stay off until you confirm them.` });
+      if (activeAlertUserRef.current === ownerId) setAlertsNotice({ ownerId, message: `You’ll be notified about ${action.title || "this film"}. Email alerts stay off until you confirm them.` });
     }).catch(() => {}).finally(() => { pendingAlertProcessingRef.current = false; });
   }, [auth.isAuthenticated, auth.user?.id, alerts.filmsLoaded, alerts.tmdbIds, alerts.follow, pendingAlertAction]);
 
@@ -474,7 +474,7 @@ export default function App() {
     setAlertsNotice(null);
     try {
       await (following ? alerts.remove(tmdbId) : alerts.follow(tmdbId));
-      if (activeAlertUserRef.current === ownerId) setAlertsNotice({ ownerId, message: following ? `Stopped following ${title}.` : `Following ${title}. Email alerts stay off until you confirm them.` });
+      if (activeAlertUserRef.current === ownerId) setAlertsNotice({ ownerId, message: following ? `Stopped notifications for ${title}.` : `You’ll be notified about ${title}. Email alerts stay off until you confirm them.` });
     } catch { /* The alerts store displays a safe account-scoped error. */ }
   }, [auth.isAuthenticated, auth.user?.id, alerts.follow, alerts.remove, requestAlertsLogin]);
   const findAlertFilm = useCallback((title) => {
@@ -717,7 +717,7 @@ export default function App() {
   } else if (pendingWatchlistAction?.kind === "search") {
     authContextMessage = `Log in to find and save the exact version of ${pendingWatchlistAction.query}.`;
   }
-  if (pendingAlertAction?.kind === "follow") authContextMessage = `Log in to follow newly added screenings for ${pendingAlertAction.title || "this film"}. Following a film won't turn on emails.`;
+  if (pendingAlertAction?.kind === "follow") authContextMessage = `Log in to receive notifications about newly added screenings for ${pendingAlertAction.title || "this film"}. Choosing a film won't turn on emails.`;
   else if (pendingAlertAction?.kind === "search") authContextMessage = `Log in to find the exact version of ${pendingAlertAction.query} for screening alerts.`;
   else if (pendingAlertAction?.kind === "manage") authContextMessage = "Log in to choose films and manage screening alerts. Your watchlist stays separate.";
 
