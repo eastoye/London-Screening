@@ -147,62 +147,6 @@ body {
   border-left: 1px solid var(--line);
 }
 
-.header-link-icon {
-  position: relative;
-  display: inline-block;
-  width: 15px;
-  height: 17px;
-  margin-right: 5px;
-  color: currentColor;
-}
-
-.bookmark-icon {
-  border: 1.5px solid currentColor;
-  border-bottom: 0;
-  border-radius: 1px 1px 0 0;
-}
-
-.bookmark-icon::after {
-  position: absolute;
-  bottom: -1px;
-  left: 2px;
-  width: 8px;
-  height: 8px;
-  border-right: 1.5px solid currentColor;
-  border-bottom: 1.5px solid currentColor;
-  background: var(--surface);
-  content: "";
-  transform: rotate(45deg);
-}
-
-.bell-icon {
-  width: 14px;
-  height: 14px;
-  margin-top: -1px;
-  border: 1.5px solid currentColor;
-  border-radius: 8px 8px 4px 4px;
-}
-
-.bell-icon::before {
-  position: absolute;
-  bottom: -4px;
-  left: 2px;
-  width: 8px;
-  border-top: 1.5px solid currentColor;
-  content: "";
-}
-
-.bell-icon::after {
-  position: absolute;
-  bottom: -6px;
-  left: 5px;
-  width: 3px;
-  height: 3px;
-  border: 1px solid currentColor;
-  border-radius: 50%;
-  content: "";
-}
-
 .account-email {
   max-width: 260px;
   overflow: hidden;

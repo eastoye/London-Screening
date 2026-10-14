@@ -764,14 +764,12 @@ export default function App() {
                     type="button"
                     onClick={openNativeWatchlistModal}
                   >
-                    <span className="header-link-icon bookmark-icon" aria-hidden="true" />
                     Watchlist
                     {nativeWatchlist.status === "ready"
                       ? ` (${nativeWatchlist.items.length})`
                       : ""}
                   </button>
                   <button className="text-button header-link alerts-link" type="button" onClick={openAlertsModal}>
-                    <span className="header-link-icon bell-icon" aria-hidden="true" />
                     Screening alerts{alerts.filmsLoaded ? ` (${alerts.films.length})` : ""}
                   </button>
                   <button
