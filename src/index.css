@@ -143,12 +143,16 @@ body {
 }
 
 .account-connected > .header-link + .header-link,
+.account-connected > .account-email + .header-link,
 .trakt-actions > .header-link + .header-link {
   border-left: 1px solid var(--line);
 }
 
 .account-email {
-  margin-right: 10px;
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding-right: 10px;
   max-width: 260px;
   overflow: hidden;
   color: var(--ink-soft);
@@ -218,11 +222,6 @@ body {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-}
-
-.account-email + .header-link,
-.account-button + .header-link {
-  border-left: 1px solid var(--line);
 }
 
 .account-control > .account-button {
