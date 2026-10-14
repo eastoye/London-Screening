@@ -8,6 +8,9 @@ import { clearImportDraft, loadImportDraft } from "./movieImport/draft.js";
 import MovieImportModal from "./MovieImportModal.jsx";
 import AuthModal from "./AuthModal.jsx";
 import NativeWatchlistModal from "./NativeWatchlistModal.jsx";
+import ScreeningAlertsModal from "./ScreeningAlerts.jsx";
+import { useScreeningAlerts } from "./useScreeningAlerts.js";
+import { clearPendingAlertAction, loadPendingAlertAction, savePendingAlertAction } from "./screeningAlerts.js";
 import { getAuthErrorMessage } from "./authApi.js";
 import {
   DEFAULT_DATE_TIME_FILTER,
@@ -58,6 +61,11 @@ export default function App() {
     loadPendingWatchlistAction()
   );
   const pendingWatchlistProcessingRef = useRef(false);
+  const [alertsModalOpen, setAlertsModalOpen] = useState(false);
+  const [alertsInitialQuery, setAlertsInitialQuery] = useState("");
+  const [alertsNotice, setAlertsNotice] = useState(null);
+  const [pendingAlertAction, setPendingAlertAction] = useState(() => loadPendingAlertAction());
+  const pendingAlertProcessingRef = useRef(false);
   const [watchDataModalOpen, setWatchDataModalOpen] = useState(false);
   const [movieImportModalOpen, setMovieImportModalOpen] = useState(false);
   const [movieImportDestination, setMovieImportDestination] = useState("trakt");
@@ -89,6 +97,31 @@ export default function App() {
   const trakt = useTrakt();
   const auth = useAuth();
   const nativeWatchlist = useNativeWatchlist(auth.user);
+  const alerts = useScreeningAlerts(auth.user);
+  const activeAlertUserRef = useRef(auth.user?.id ?? null);
+  activeAlertUserRef.current = auth.user?.id ?? null;
+
+  useEffect(() => {
+    if (!auth.isAuthenticated || !pendingAlertAction) return;
+    if (pendingAlertAction.kind === "follow" && (!alerts.filmsLoaded || pendingAlertProcessingRef.current)) return;
+    const action = pendingAlertAction;
+    clearPendingAlertAction();
+    setPendingAlertAction(null);
+    if (action.kind === "manage" || action.kind === "search") {
+      setAlertsInitialQuery(action.kind === "search" ? action.query : "");
+      setAlertsModalOpen(true);
+      return;
+    }
+    const ownerId = auth.user.id;
+    if (alerts.tmdbIds.has(action.tmdbId)) {
+      setAlertsNotice({ ownerId, message: `Already following ${action.title || "this film"}.` });
+      return;
+    }
+    pendingAlertProcessingRef.current = true;
+    alerts.follow(action.tmdbId).then(() => {
+      if (activeAlertUserRef.current === ownerId) setAlertsNotice({ ownerId, message: `Following ${action.title || "this film"}. Email alerts stay off until you confirm them.` });
+    }).catch(() => {}).finally(() => { pendingAlertProcessingRef.current = false; });
+  }, [auth.isAuthenticated, auth.user?.id, alerts.filmsLoaded, alerts.tmdbIds, alerts.follow, pendingAlertAction]);
 
   useEffect(() => {
     if (auth.loading) return;
@@ -208,6 +241,9 @@ export default function App() {
 
     setNativeWatchlistModalOpen(false);
     setNativeWatchlistInitialQuery("");
+    setAlertsModalOpen(false);
+    setAlertsInitialQuery("");
+    setAlertsNotice(null);
   }, [auth.isAuthenticated]);
 
   useEffect(() => {
@@ -371,10 +407,16 @@ export default function App() {
       clearPendingWatchlistAction();
       setPendingWatchlistAction(null);
     }
-  }, [clearRecoveryMode, pendingWatchlistAction]);
+    if (reason === "cancelled" && pendingAlertAction) {
+      clearPendingAlertAction();
+      setPendingAlertAction(null);
+    }
+  }, [clearRecoveryMode, pendingWatchlistAction, pendingAlertAction]);
 
   const requestWatchlistLogin = useCallback(
     (action) => {
+      clearPendingAlertAction();
+      setPendingAlertAction(null);
       const stored = savePendingWatchlistAction(action);
 
       if (!stored) {
@@ -407,6 +449,41 @@ export default function App() {
       setAccountBusy(false);
     }
   }, [accountBusy, auth]);
+
+  const openAlertsModal = useCallback(() => {
+    setAlertsInitialQuery("");
+    setAlertsNotice(null);
+    setAlertsModalOpen(true);
+  }, []);
+  const closeAlertsModal = useCallback(() => { setAlertsModalOpen(false); setAlertsInitialQuery(""); }, []);
+  const consumeAlertsQuery = useCallback(() => setAlertsInitialQuery(""), []);
+  const requestAlertsLogin = useCallback((action = { kind: "manage" }) => {
+    clearPendingWatchlistAction();
+    setPendingWatchlistAction(null);
+    const pending = savePendingAlertAction(action);
+    setPendingAlertAction(pending);
+    setAccountError(pending ? "" : "Log in, then choose your film for screening alerts again.");
+    setAlertsModalOpen(false);
+    setAlertsNotice(null);
+    setAuthModalOpen(true);
+  }, []);
+  const loginForAlerts = useCallback(() => requestAlertsLogin(), [requestAlertsLogin]);
+  const toggleScreeningFollow = useCallback(async ({ tmdbId, title, following }) => {
+    if (!auth.isAuthenticated) { requestAlertsLogin({ kind: "follow", tmdbId, title }); return; }
+    const ownerId = auth.user.id;
+    setAlertsNotice(null);
+    try {
+      await (following ? alerts.remove(tmdbId) : alerts.follow(tmdbId));
+      if (activeAlertUserRef.current === ownerId) setAlertsNotice({ ownerId, message: following ? `Stopped following ${title}.` : `Following ${title}. Email alerts stay off until you confirm them.` });
+    } catch { /* The alerts store displays a safe account-scoped error. */ }
+  }, [auth.isAuthenticated, auth.user?.id, alerts.follow, alerts.remove, requestAlertsLogin]);
+  const findAlertFilm = useCallback((title) => {
+    if (!auth.isAuthenticated) { requestAlertsLogin({ kind: "search", query: title }); return; }
+    setAlertsInitialQuery(String(title ?? "").trim().slice(0, 200));
+    setAlertsNotice(null);
+    setAlertsModalOpen(true);
+  }, [auth.isAuthenticated, requestAlertsLogin]);
+  const alertControls = { followedTmdbIds: alerts.tmdbIds, busyTmdbIds: alerts.busyIds, loading: auth.loading || (auth.isAuthenticated && !alerts.filmsLoaded), onToggleFollow: toggleScreeningFollow, onFindAlertFilm: findAlertFilm };
 
   const openWatchDataModal = useCallback(() => {
     setWatchDataModalOpen(true);
@@ -640,6 +717,9 @@ export default function App() {
   } else if (pendingWatchlistAction?.kind === "search") {
     authContextMessage = `Log in to find and save the exact version of ${pendingWatchlistAction.query}.`;
   }
+  if (pendingAlertAction?.kind === "follow") authContextMessage = `Log in to follow newly added screenings for ${pendingAlertAction.title || "this film"}. Following a film won't turn on emails.`;
+  else if (pendingAlertAction?.kind === "search") authContextMessage = `Log in to find the exact version of ${pendingAlertAction.query} for screening alerts.`;
+  else if (pendingAlertAction?.kind === "manage") authContextMessage = "Log in to choose films and manage screening alerts. Your watchlist stays separate.";
 
   if (noCinemasSelected) {
     emptyMessage =
@@ -697,15 +777,17 @@ export default function App() {
                   >
                     {accountBusy ? "Logging out…" : "Log out"}
                   </button>
+                  <button className="text-button" type="button" onClick={openAlertsModal}>Screening alerts{alerts.filmsLoaded ? ` (${alerts.films.length})` : ""}</button>
                 </div>
               ) : (
-                <button
+                <><button
                   className="account-button"
                   type="button"
                   onClick={openAuthModal}
                 >
                   Log in
                 </button>
+                <button className="text-button" type="button" onClick={openAlertsModal}>Screening alerts</button></>
               )}
             </div>
 
@@ -805,6 +887,9 @@ export default function App() {
             </button>
           </div>
         )}
+
+        {alertsNotice && alertsNotice.ownerId === auth.user?.id && <div className="account-message success" role="status"><span>{alertsNotice.message}</span><button className="text-button" type="button" onClick={() => setAlertsNotice(null)}>Dismiss</button></div>}
+        {alerts.error && !alertsModalOpen && <div className="account-message error" role="alert"><span>{alerts.error}</span><button className="text-button" type="button" onClick={openAlertsModal}>Manage alerts</button></div>}
 
         {trakt.error && (
           <div className="trakt-error" role="status">
@@ -954,6 +1039,7 @@ export default function App() {
                 dateKey={key}
                 screenings={rows}
                 ratingsByTmdbId={ratingsByTmdbId}
+                alertControls={alertControls}
               />
             ) : (
               <MovieDayGroup
@@ -966,6 +1052,7 @@ export default function App() {
                 removingTmdbIds={nativeWatchlist.removingTmdbIds}
                 onToggleWatchlist={handleToggleNativeWatchlist}
                 onFindMovie={handleFindNativeWatchlistMovie}
+                alertControls={alertControls}
               />
             )
           ))}
@@ -999,6 +1086,18 @@ export default function App() {
         onUpdatePassword={auth.updateUserPassword}
         recoveryMode={auth.recoveryMode}
         contextMessage={authContextMessage}
+      />
+
+      <ScreeningAlertsModal
+        key={`${auth.user?.id ?? "anonymous"}:${auth.user?.email ?? ""}`}
+        isOpen={alertsModalOpen}
+        onClose={closeAlertsModal}
+        user={auth.user}
+        authLoading={auth.loading}
+        alerts={alerts}
+        onLogin={loginForAlerts}
+        initialQuery={alertsInitialQuery}
+        onInitialQueryConsumed={consumeAlertsQuery}
       />
 
       <NativeWatchlistModal

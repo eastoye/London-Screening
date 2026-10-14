@@ -1,6 +1,7 @@
 import { londonTime, londonDateHeading, isToday } from "./time.js";
 import ScreeningPoster from "./ScreeningPoster.jsx";
 import { getScreeningDisplayChips } from "./screeningPresentation.js";
+import { ScreeningFollowButton } from "./ScreeningAlerts.jsx";
 
 function ChevronIcon() {
   return (
@@ -21,7 +22,7 @@ function ChevronIcon() {
   );
 }
 
-export default function ScreeningRow({ screening, userRating }) {
+export default function ScreeningRow({ screening, userRating, alertControls }) {
   const soldOut =
     screening.sold_out === true || screening.availability_status === "sold_out";
   const bookable = Boolean(screening.booking_url) && !soldOut;
@@ -74,8 +75,7 @@ export default function ScreeningRow({ screening, userRating }) {
     </>
   );
 
-  if (bookable) {
-    return (
+  const row = bookable ? (
       <a
         className="screening"
         href={screening.booking_url}
@@ -84,10 +84,7 @@ export default function ScreeningRow({ screening, userRating }) {
       >
         {content}
       </a>
-    );
-  }
-
-  return (
+    ) : (
     <div
       className={`screening${soldOut ? " sold-out" : " unavailable"}`}
       aria-disabled="true"
@@ -95,9 +92,12 @@ export default function ScreeningRow({ screening, userRating }) {
       {content}
     </div>
   );
+
+  if (!alertControls) return row;
+  return <div className="screening-with-alerts">{row}<ScreeningFollowButton movie={movie} title={screening.movie_title} {...alertControls} /></div>;
 }
 
-export function DayGroup({ dateKey, screenings, ratingsByTmdbId }) {
+export function DayGroup({ dateKey, screenings, ratingsByTmdbId, alertControls }) {
   const heading = londonDateHeading(screenings[0].start_time);
   const today = isToday(screenings[0].start_time);
 
@@ -117,6 +117,7 @@ export function DayGroup({ dateKey, screenings, ratingsByTmdbId }) {
             key={screening.id}
             screening={screening}
             userRating={userRating}
+            alertControls={alertControls}
           />
         );
       })}
