@@ -234,10 +234,6 @@ body {
   padding-left: 6px;
 }
 
-.account-control > .header-link:last-child {
-  padding-right: 0;
-}
-
 .header-actions > .trakt-button {
   margin-top: 14px;
 }
@@ -849,10 +845,6 @@ body {
   .account-control > .header-link {
     padding-right: 6px;
     padding-left: 6px;
-  }
-
-  .account-control > .header-link:last-child {
-    padding-right: 0;
   }
 
   .header-actions > .trakt-button {
