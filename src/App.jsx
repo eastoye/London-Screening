@@ -760,24 +760,28 @@ export default function App() {
                     {auth.user.email}
                   </span>
                   <button
-                    className="text-button"
+                    className="text-button header-link watchlist-link"
                     type="button"
                     onClick={openNativeWatchlistModal}
                   >
+                    <span className="header-link-icon bookmark-icon" aria-hidden="true" />
                     Watchlist
                     {nativeWatchlist.status === "ready"
                       ? ` (${nativeWatchlist.items.length})`
                       : ""}
                   </button>
+                  <button className="text-button header-link alerts-link" type="button" onClick={openAlertsModal}>
+                    <span className="header-link-icon bell-icon" aria-hidden="true" />
+                    Screening alerts{alerts.filmsLoaded ? ` (${alerts.films.length})` : ""}
+                  </button>
                   <button
-                    className="text-button"
+                    className="text-button header-link logout-link"
                     type="button"
                     onClick={handleAccountLogout}
                     disabled={accountBusy}
                   >
                     {accountBusy ? "Logging out…" : "Log out"}
                   </button>
-                  <button className="text-button" type="button" onClick={openAlertsModal}>Screening alerts{alerts.filmsLoaded ? ` (${alerts.films.length})` : ""}</button>
                 </div>
               ) : (
                 <><button
@@ -797,7 +801,7 @@ export default function App() {
 
               <div className="trakt-actions">
                 <button
-                  className="text-button"
+                  className="text-button header-link"
                   type="button"
                   onClick={openMovieImportModal}
                   disabled={traktBusy}
@@ -806,7 +810,7 @@ export default function App() {
                 </button>
 
                 <button
-                  className="text-button"
+                  className="text-button header-link"
                   type="button"
                   onClick={trakt.refresh}
                   disabled={traktBusy}
@@ -815,7 +819,7 @@ export default function App() {
                 </button>
 
                 <button
-                  className="text-button"
+                  className="text-button header-link disconnect-link"
                   type="button"
                   onClick={handleTraktDisconnect}
                 >
