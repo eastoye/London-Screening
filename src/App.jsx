@@ -119,7 +119,7 @@ export default function App() {
     }
     pendingAlertProcessingRef.current = true;
     alerts.follow(action.tmdbId).then(() => {
-      if (activeAlertUserRef.current === ownerId) setAlertsNotice({ ownerId, message: `You’ll be notified about ${action.title || "this film"}. Email alerts stay off until you confirm them.` });
+      if (activeAlertUserRef.current === ownerId) setAlertsNotice({ ownerId, message: `You'll be notified about ${action.title || "this film"}. Email alerts stay off until you confirm them.` });
     }).catch(() => {}).finally(() => { pendingAlertProcessingRef.current = false; });
   }, [auth.isAuthenticated, auth.user?.id, alerts.filmsLoaded, alerts.tmdbIds, alerts.follow, pendingAlertAction]);
 
@@ -474,7 +474,7 @@ export default function App() {
     setAlertsNotice(null);
     try {
       await (following ? alerts.remove(tmdbId) : alerts.follow(tmdbId));
-      if (activeAlertUserRef.current === ownerId) setAlertsNotice({ ownerId, message: following ? `Stopped notifications for ${title}.` : `You’ll be notified about ${title}. Email alerts stay off until you confirm them.` });
+      if (activeAlertUserRef.current === ownerId) setAlertsNotice({ ownerId, message: following ? `Stopped notifications for ${title}.` : `You'll be notified about ${title}. Email alerts stay off until you confirm them.` });
     } catch { /* The alerts store displays a safe account-scoped error. */ }
   }, [auth.isAuthenticated, auth.user?.id, alerts.follow, alerts.remove, requestAlertsLogin]);
   const findAlertFilm = useCallback((title) => {
@@ -1010,17 +1010,36 @@ export default function App() {
       {SUPABASE_CONFIGURED && status === "ready" && groups.length > 0 && (
         <main>
           <div className="results-view-controls">
-            <button
+            <div
               className="results-view-toggle"
-              type="button"
-              onClick={() =>
-                setResultsView((current) =>
-                  current === "time" ? "movie" : "time"
-                )
-              }
+              role="group"
+              aria-label="Results view"
             >
-              {resultsView === "time" ? "By movie" : "By time"}
-            </button>
+              <button
+                className="results-view-option"
+                type="button"
+                aria-pressed={resultsView === "time"}
+                onClick={() => setResultsView("time")}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+                  <circle cx="12" cy="12" r="8" />
+                  <path d="M12 7v5l3 2" />
+                </svg>
+                <span>By time</span>
+              </button>
+              <button
+                className="results-view-option"
+                type="button"
+                aria-pressed={resultsView === "movie"}
+                onClick={() => setResultsView("movie")}
+              >
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+                  <rect x="4" y="3" width="16" height="18" rx="2" />
+                  <path d="M8 3v18M16 3v18M4 8h4m8 0h4M4 16h4m8 0h4" />
+                </svg>
+                <span>By movie</span>
+              </button>
+            </div>
           </div>
 
           {groups.map(([key, rows]) => (

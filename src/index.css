@@ -76,7 +76,8 @@ body {
 .header-actions {
   display: flex;
   min-width: 0;
-  flex: none;
+  max-width: 100%;
+  flex: 0 1 auto;
   flex-direction: column;
   align-items: flex-end;
   gap: 0;
@@ -85,6 +86,7 @@ body {
 .account-control {
   display: flex;
   min-width: 0;
+  max-width: 100%;
   align-items: center;
   justify-content: flex-end;
   column-gap: 0;
@@ -129,16 +131,17 @@ body {
 .account-connected {
   display: flex;
   min-width: 0;
+  max-width: 100%;
   align-items: center;
   justify-content: flex-end;
-  column-gap: 0;
+  gap: 4px 10px;
 }
 
 .header-link {
   display: inline-flex;
+  flex: none;
   align-items: center;
   min-height: 20px;
-  padding: 0 10px;
   white-space: nowrap;
 }
 
@@ -146,18 +149,19 @@ body {
 .account-connected > .account-email + .header-link,
 .trakt-actions > .header-link + .header-link {
   border-left: 1px solid var(--line);
+  padding-left: 10px;
 }
 
 .account-email {
-  display: inline-flex;
-  align-items: center;
+  display: block;
+  min-width: 0;
   min-height: 20px;
-  padding-right: 10px;
   max-width: 260px;
   overflow: hidden;
   color: var(--ink-soft);
   font-size: 12px;
   font-weight: 600;
+  line-height: 20px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -195,6 +199,8 @@ body {
 .trakt-connected {
   display: flex;
   flex: none;
+  min-width: 0;
+  max-width: 100%;
   flex-direction: column;
   align-items: flex-end;
   gap: 4px;
@@ -210,7 +216,11 @@ body {
 
 .trakt-actions {
   display: flex;
-  gap: 0;
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
 }
 
 .text-button {
@@ -350,28 +360,64 @@ body {
 
 .results-view-toggle {
   display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.025);
+}
+
+.results-view-option {
+  position: relative;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 36px;
-  padding: 7px 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
-  color: var(--ink);
+  gap: 8px;
+  min-width: 108px;
+  min-height: 40px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink-soft);
   font-family: inherit;
   font-size: 13px;
   font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.results-view-toggle:hover {
-  border-color: var(--ink-soft);
+.results-view-option svg {
+  flex: none;
 }
 
-.results-view-toggle:focus-visible {
-  outline: 3px solid rgba(184, 52, 26, 0.18);
-  outline-offset: 2px;
+.results-view-option::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: transparent;
+  content: "";
+}
+
+.results-view-option[aria-pressed="true"] {
+  background: var(--surface);
+  color: var(--accent);
+}
+
+.results-view-option[aria-pressed="true"]::after {
+  background: var(--accent);
+}
+
+.results-view-option:hover {
+  background: var(--surface);
+}
+
+.results-view-option:focus-visible {
+  border-radius: 6px;
+  outline: 2px solid var(--accent);
+  outline-offset: -4px;
 }
 
 /* Status */
@@ -830,6 +876,7 @@ body {
   .account-control,
   .account-connected {
     max-width: 100%;
+    flex-wrap: wrap;
     justify-content: flex-start;
   }
 
