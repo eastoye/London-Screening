@@ -373,3 +373,12 @@
     max-height: calc(var(--modal-viewport-height, 100dvh) * .94);
   }
 }
+
+@media (max-width: 620px) {
+  .movie-import-topbar h2, .movie-import-complete h3 { font-size: 24px; }
+  .movie-import-topbar, .movie-import-input, .movie-import-complete,
+  .movie-import-counts, .movie-import-actions.sticky, .movie-import-destination,
+  .movie-import-review-note, .movie-import-saving, .movie-import-pagination { padding-left: 20px; padding-right: 20px; }
+  .movie-import-list { padding-left: 20px; padding-right: 20px; }
+  .movie-import-error { margin-left: 20px; margin-right: 20px; }
+}

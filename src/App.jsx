@@ -1023,10 +1023,6 @@ export default function App() {
                 aria-pressed={resultsView === "time"}
                 onClick={() => setResultsView("time")}
               >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
-                  <circle cx="12" cy="12" r="8" />
-                  <path d="M12 7v5l3 2" />
-                </svg>
                 <span>By time</span>
               </button>
               <button
@@ -1035,10 +1031,6 @@ export default function App() {
                 aria-pressed={resultsView === "movie"}
                 onClick={() => setResultsView("movie")}
               >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
-                  <rect x="4" y="3" width="16" height="18" rx="2" />
-                  <path d="M8 3v18M16 3v18M4 8h4m8 0h4M4 16h4m8 0h4" />
-                </svg>
                 <span>By movie</span>
               </button>
             </div>

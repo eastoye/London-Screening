@@ -286,10 +286,20 @@ body {
 
 /* Controls */
 .controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 22px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  align-items: start;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.controls > .search { grid-column: 1 / -1; }
+.controls > * { min-width: 0; }
+.controls :is(.cinema-multiselect-trigger, .distance-filter-trigger,
+  .date-time-filter-trigger, .filters-dropdown-trigger, .filter-select, .search input) {
+  min-width: 0;
+  width: 100%;
+  min-height: 46px;
 }
 
 .search {
@@ -361,7 +371,7 @@ body {
 .results-view-controls {
   display: flex;
   justify-content: flex-end;
-  margin: -8px 0 12px;
+  margin: 0 0 16px;
 }
 
 .results-view-toggle {
@@ -379,7 +389,7 @@ body {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-width: 108px;
+  min-width: 90px;
   min-height: 40px;
   padding: 8px 12px;
   border: 0;
@@ -391,10 +401,6 @@ body {
   line-height: 20px;
   white-space: nowrap;
   cursor: pointer;
-}
-
-.results-view-option svg {
-  flex: none;
 }
 
 .results-view-option::after {
@@ -637,8 +643,16 @@ body {
 }
 
 /* By movie view */
+.movie-summary-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.movie-summary-shell > .movie-summary { min-width: 0; }
 .movie-group .movie-personal-actions {
-  padding: 0 4px 12px;
+  padding: 8px 4px 8px 0;
 }
 
 .movie-group {
@@ -952,14 +966,17 @@ body {
   }
 
   .screening {
-    grid-template-columns: 65px 56px 1fr;
-    gap: 10px;
+    grid-template-columns: 65px minmax(0, 1fr);
+    column-gap: 12px;
+    row-gap: 6px;
+    align-items: start;
     padding: 11px 2px;
   }
 
-  .s-cta {
-    display: none;
-  }
+  .screening > .poster { grid-column: 1; grid-row: 1 / 4; }
+  .screening > .s-time { grid-column: 2; grid-row: 1; padding: 0; font-size: 14px; }
+  .screening > .s-body { grid-column: 2; grid-row: 2; }
+  .screening > .s-cta { grid-column: 2; grid-row: 3; justify-self: start; }
 
   .s-title {
     font-size: 15px;
@@ -973,11 +990,11 @@ body {
     font-size: 17px;
   }
 
-  .results-view-controls {
-    margin-top: -6px;
-  }
+  .results-view-option { min-height: 44px; }
 
+  .movie-summary-shell { grid-template-columns: minmax(0, 1fr); gap: 0; }
   .movie-group .movie-personal-actions {
+    justify-content: flex-end;
     padding: 0 2px 12px 62px;
   }
 
@@ -1012,7 +1029,8 @@ body {
   }
 
   .movie-screening-cta {
-    display: none;
+    grid-column: 2;
+    justify-self: start;
   }
 }
 
@@ -1041,4 +1059,16 @@ body {
   .auth-dialog button,
   .watch-data-dialog button,
   .movie-import-dialog button { touch-action: manipulation; }
+}
+
+@media (max-width: 760px) {
+  .controls { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .controls > .date-time-filter { grid-column: 1 / -1; }
+}
+
+@media (max-width: 620px) {
+  .app :is(input, select, textarea),
+  :is(.auth-dialog, .native-watchlist-dialog, .watch-data-dialog, .movie-import-dialog) :is(input, select, textarea) {
+    font-size: 16px;
+  }
 }

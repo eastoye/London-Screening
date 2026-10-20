@@ -389,3 +389,12 @@
     max-height: calc(var(--modal-viewport-height, 100dvh) * .92);
   }
 }
+
+@media (max-width: 620px) {
+  .native-watchlist-topbar h2 { font-size: 24px; }
+  .native-watchlist-topbar, .native-watchlist-film, .native-watchlist-candidate { padding-left: 20px; padding-right: 20px; }
+  .native-watchlist-tabs, .native-watchlist-error { margin-left: 20px; margin-right: 20px; }
+  .native-watchlist-import-action { padding-left: 20px; padding-right: 20px; }
+  .native-watchlist-search-view { padding-left: 20px; padding-right: 20px; }
+  .native-watchlist-results { margin-left: -20px; margin-right: -20px; }
+}
