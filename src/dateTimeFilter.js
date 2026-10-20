@@ -260,7 +260,7 @@ export function dateTimeFilterLabel(value) {
   const filter = normaliseDateTimeFilter(value);
 
   if (isDefaultDateTimeFilter(filter)) {
-    return "All dates & times";
+    return "Date and time";
   }
 
   const dateLabels = {
