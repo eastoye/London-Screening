@@ -1,3 +1,4 @@
+import { useModalViewport } from "./useModalViewport.js";
 import { useEffect, useId, useRef, useState } from "react";
 import {
   getAuthErrorMessage,
@@ -35,6 +36,7 @@ export default function AuthModal({
   recoveryMode = false,
   contextMessage = "",
 }) {
+  const viewportStyle = useModalViewport(isOpen);
   const [mode, setMode] = useState("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -285,7 +287,7 @@ export default function AuthModal({
 
   if (recoveryMode) {
     return (
-      <div className="auth-backdrop" onPointerDown={handleBackdropPointerDown}>
+      <div className="auth-backdrop" style={viewportStyle} onPointerDown={handleBackdropPointerDown}>
         <section
           ref={dialogRef}
           className="auth-dialog"
@@ -373,7 +375,7 @@ export default function AuthModal({
   }
 
   return (
-    <div className="auth-backdrop" onPointerDown={handleBackdropPointerDown}>
+    <div className="auth-backdrop" style={viewportStyle} onPointerDown={handleBackdropPointerDown}>
       <section
         ref={dialogRef}
         className="auth-dialog"

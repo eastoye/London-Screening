@@ -12,6 +12,9 @@
 .watch-data-dialog {
   width: min(620px, 100%);
   max-height: min(820px, calc(100vh - 44px));
+  max-height: min(820px, calc(100dvh - 44px));
+  overscroll-behavior: contain;
+  scroll-padding-block: 72px;
   overflow-y: auto;
   border: 1px solid var(--line-strong);
   border-radius: 14px;
@@ -316,6 +319,7 @@
   .watch-data-dialog {
     width: 100%;
     max-height: min(88vh, 820px);
+    max-height: min(88dvh, 820px);
     border-right: 0;
     border-bottom: 0;
     border-left: 0;
@@ -324,7 +328,7 @@
 
   .watch-data-choice,
   .watch-data-import {
-    padding: 2px 20px 28px;
+    padding: 2px 20px calc(28px + env(safe-area-inset-bottom, 0px));
   }
 
   .watch-data-intro h2 {
@@ -354,5 +358,17 @@
   .watch-data-icon-button,
   .watch-data-link {
     transition: none;
+  }
+}
+
+@media (max-width: 600px) {
+  .watch-data-backdrop {
+    top: var(--modal-viewport-top, 0px);
+    bottom: auto;
+    height: 100vh;
+    height: var(--modal-viewport-height, 100dvh);
+  }
+  .watch-data-dialog {
+    max-height: calc(var(--modal-viewport-height, 100dvh) * .88);
   }
 }

@@ -1,3 +1,4 @@
+import { useModalViewport } from "./useModalViewport.js";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { deduplicateBeforeMatching } from "./movieImport/model.js";
 import { parseTextInput } from "./movieImport/textParser.js";
@@ -76,6 +77,7 @@ function ResultSummary({ result }) {
 export default function MovieImportModal({ isOpen, onClose, initialDestination = "trakt", resumeDraft = false,
   nativeUserId, nativeUserLabel, authLoading = false, traktAccountKey, traktConnected, traktConnecting,
   onRequireNativeAuth, onConnectTrakt, onNativeImport, onTraktImport, suspended = false }) {
+  const viewportStyle = useModalViewport(isOpen);
   const [destination, setDestination] = useState(initialDestination);
   const [phase, setPhase] = useState("input");
   const [text, setText] = useState("");
@@ -224,7 +226,7 @@ export default function MovieImportModal({ isOpen, onClose, initialDestination =
   };
 
   if (!isOpen || suspended || authLoading) return null;
-  return <div className="movie-import-backdrop" onPointerDown={(event) => event.target === event.currentTarget && !busy && onClose()}>
+  return <div className="movie-import-backdrop" style={viewportStyle} onPointerDown={(event) => event.target === event.currentTarget && !busy && onClose()}>
     <section ref={dialogRef} className="movie-import-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={descriptionId}>
       <div className="movie-import-topbar"><div><h2 id={titleId}>Import movies</h2><p id={descriptionId}>Match films, review your selections, then choose where to save them.</p></div><button type="button" className="watch-data-icon-button" onClick={onClose} disabled={busy} aria-label="Close movie import"><CloseIcon /></button></div>
       <div className="movie-import-destination">

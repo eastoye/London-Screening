@@ -1,3 +1,4 @@
+import { useModalViewport } from "./useModalViewport.js";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import ScreeningPoster from "./ScreeningPoster.jsx";
 import { buildUpcomingScreeningsByTmdbId } from "./nativeWatchlist.js";
@@ -134,6 +135,7 @@ export default function NativeWatchlistModal({
   initialQuery = "",
   onInitialQueryConsumed,
 }) {
+  const viewportStyle = useModalViewport(isOpen);
   const [view, setView] = useState("saved");
   const [query, setQuery] = useState("");
   const [candidates, setCandidates] = useState([]);
@@ -272,7 +274,7 @@ export default function NativeWatchlistModal({
 
   return (
     <div
-      className="native-watchlist-backdrop"
+      className="native-watchlist-backdrop" style={viewportStyle}
       onPointerDown={handleBackdropPointerDown}
     >
       <section

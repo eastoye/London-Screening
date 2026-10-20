@@ -80,7 +80,7 @@ body {
   flex: 0 1 auto;
   flex-direction: column;
   align-items: flex-end;
-  gap: 0;
+  gap: 12px;
 }
 
 .account-control {
@@ -133,8 +133,15 @@ body {
   min-width: 0;
   max-width: 100%;
   align-items: center;
+  flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 4px 10px;
+  gap: 6px 10px;
+}
+
+.account-links {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .header-link {
@@ -145,8 +152,7 @@ body {
   white-space: nowrap;
 }
 
-.account-connected > .header-link + .header-link,
-.account-connected > .account-email + .header-link,
+.account-links > .header-link + .header-link,
 .trakt-actions > .header-link + .header-link {
   border-left: 1px solid var(--line);
   padding-left: 10px;
@@ -203,8 +209,7 @@ body {
   max-width: 100%;
   flex-direction: column;
   align-items: flex-end;
-  gap: 4px;
-  margin-top: 3px;
+  gap: 6px;
 }
 
 .trakt-summary {
@@ -218,9 +223,10 @@ body {
   display: flex;
   min-width: 0;
   max-width: 100%;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: 4px 10px;
+  justify-content: flex-end;
+  gap: 6px 10px;
 }
 
 .text-button {
@@ -245,7 +251,7 @@ body {
 }
 
 .header-actions > .trakt-button {
-  margin-top: 14px;
+  margin-top: 0;
 }
 
 .logout-link {
@@ -881,7 +887,36 @@ body {
   }
 
   .account-email {
-    max-width: min(72vw, 300px);
+    flex: 1 1 100%;
+    max-width: 100%;
+  }
+
+  .trakt-actions {
+    justify-content: flex-start;
+  }
+
+  /* Wrapping rows use whitespace instead of orphaned divider borders. */
+  .account-links > .header-link + .header-link,
+  .trakt-actions > .header-link + .header-link {
+    border-left: 0;
+    padding-left: 0;
+  }
+
+  .header-actions .header-link {
+    min-height: 44px;
+  }
+
+  .header-actions .account-button,
+  .header-actions .trakt-button {
+    position: relative;
+  }
+
+  .header-actions .account-button::after,
+  .header-actions .trakt-button::after {
+    content: "";
+    position: absolute;
+    inset: -5px 0;
+    min-height: 44px;
   }
 
   .account-button,
@@ -895,7 +930,7 @@ body {
   }
 
   .header-actions > .trakt-button {
-    margin-top: 14px;
+    margin-top: 0;
   }
 
   .trakt-connected {
@@ -971,4 +1006,31 @@ body {
   .movie-screening-cta {
     display: none;
   }
+}
+
+@media (max-width: 620px) {
+  :is(.native-watchlist-dialog, .auth-dialog, .watch-data-dialog, .movie-import-dialog) button,
+  .watch-data-link {
+    position: relative;
+  }
+
+  :is(.native-watchlist-dialog, .auth-dialog, .watch-data-dialog, .movie-import-dialog) button::after,
+  .watch-data-link::after {
+    content: "";
+    position: absolute;
+    inset: -4px 0;
+    min-height: 44px;
+  }
+
+  .native-watchlist-dialog .native-watchlist-close::after,
+  .auth-dialog .auth-icon-button::after,
+  :is(.watch-data-dialog, .movie-import-dialog) .watch-data-icon-button::after {
+    left: -5px;
+    right: -5px;
+  }
+
+  .native-watchlist-dialog button,
+  .auth-dialog button,
+  .watch-data-dialog button,
+  .movie-import-dialog button { touch-action: manipulation; }
 }

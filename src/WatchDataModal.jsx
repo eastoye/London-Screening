@@ -1,3 +1,4 @@
+import { useModalViewport } from "./useModalViewport.js";
 import { useEffect, useId, useRef, useState } from "react";
 import "./WatchDataModal.css";
 
@@ -163,6 +164,7 @@ export default function WatchDataModal({
   onConnectTrakt,
   isConnecting = false,
 }) {
+  const viewportStyle = useModalViewport(isOpen);
   const [view, setView] = useState("choice");
   const [service, setService] = useState("imdb");
 
@@ -256,7 +258,7 @@ export default function WatchDataModal({
 
   return (
     <div
-      className="watch-data-backdrop"
+      className="watch-data-backdrop" style={viewportStyle}
       onPointerDown={handleBackdropPointerDown}
     >
       <section

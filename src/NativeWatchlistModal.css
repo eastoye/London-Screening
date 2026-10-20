@@ -10,6 +10,8 @@
 }
 
 .native-watchlist-dialog {
+  display: flex;
+  flex-direction: column;
   width: min(720px, 100%);
   max-height: min(820px, calc(100vh - 44px));
   max-height: min(820px, calc(100dvh - 44px));
@@ -19,6 +21,10 @@
   background: var(--surface);
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.2);
   color: var(--ink);
+}
+
+.native-watchlist-dialog > :not(.native-watchlist-content) {
+  flex-shrink: 0;
 }
 
 .native-watchlist-topbar {
@@ -111,8 +117,9 @@
 }
 
 .native-watchlist-content {
-  max-height: min(610px, calc(100vh - 230px));
-  max-height: min(610px, calc(100dvh - 230px));
+  flex: 0 1 auto;
+  min-height: 0;
+  overscroll-behavior: contain;
   overflow-y: auto;
   border-top: 1px solid var(--line);
 }
@@ -323,8 +330,8 @@
   }
 
   .native-watchlist-content {
-    max-height: calc(92vh - 205px);
-    max-height: calc(92dvh - 205px);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    scroll-padding-block: 16px;
   }
 
   .native-watchlist-film,
@@ -365,3 +372,20 @@
 
 .native-watchlist-import-action { padding: 16px 22px 0; }
 .native-watchlist-import-action button { width: auto; }
+
+@media (max-width: 600px) {
+  .native-watchlist-import-action { padding: 16px 16px 12px; }
+  .native-watchlist-search input { font-size: 16px; }
+}
+
+@media (max-width: 600px) {
+  .native-watchlist-backdrop {
+    top: var(--modal-viewport-top, 0px);
+    bottom: auto;
+    height: 100vh;
+    height: var(--modal-viewport-height, 100dvh);
+  }
+  .native-watchlist-dialog {
+    max-height: calc(var(--modal-viewport-height, 100dvh) * .92);
+  }
+}

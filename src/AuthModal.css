@@ -301,3 +301,20 @@
     transition: none;
   }
 }
+
+@media (max-width: 600px) {
+  .auth-backdrop {
+    top: var(--modal-viewport-top, 0px);
+    bottom: auto;
+    height: 100vh;
+    height: var(--modal-viewport-height, 100dvh);
+  }
+  .auth-dialog {
+    max-height: calc(var(--modal-viewport-height, 100dvh) * .92);
+  }
+}
+
+@media (max-width: 600px) {
+  .auth-form input { font-size: 16px; }
+  .auth-dialog { overscroll-behavior: contain; scroll-padding-block: 48px; }
+}

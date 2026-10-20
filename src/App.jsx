@@ -754,24 +754,26 @@ export default function App() {
                   <span className="account-email" title={auth.user.email}>
                     {auth.user.email}
                   </span>
-                  <button
-                    className="text-button header-link watchlist-link"
-                    type="button"
-                    onClick={openNativeWatchlistModal}
-                  >
-                    Watchlist
-                    {nativeWatchlist.status === "ready"
-                      ? ` (${nativeWatchlist.items.length})`
-                      : ""}
-                  </button>
-                  <button
-                    className="text-button header-link logout-link"
-                    type="button"
-                    onClick={handleAccountLogout}
-                    disabled={accountBusy}
-                  >
-                    {accountBusy ? "Logging out…" : "Log out"}
-                  </button>
+                  <div className="account-links">
+                    <button
+                      className="text-button header-link watchlist-link"
+                      type="button"
+                      onClick={openNativeWatchlistModal}
+                    >
+                      Watchlist
+                      {nativeWatchlist.status === "ready"
+                        ? ` (${nativeWatchlist.items.length})`
+                        : ""}
+                    </button>
+                    <button
+                      className="text-button header-link logout-link"
+                      type="button"
+                      onClick={handleAccountLogout}
+                      disabled={accountBusy}
+                    >
+                      {accountBusy ? "Logging out…" : "Log out"}
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <><button
