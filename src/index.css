@@ -637,6 +637,10 @@ body {
 }
 
 /* By movie view */
+.movie-group .movie-personal-actions {
+  padding: 0 4px 12px;
+}
+
 .movie-group {
   border-bottom: 1px solid var(--line);
 }
@@ -971,6 +975,10 @@ body {
 
   .results-view-controls {
     margin-top: -6px;
+  }
+
+  .movie-group .movie-personal-actions {
+    padding: 0 2px 12px 62px;
   }
 
   .movie-summary {
